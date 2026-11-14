@@ -1,0 +1,5 @@
+venv/
+config.env
+*.bak
+__pycache__/
+*.zip
