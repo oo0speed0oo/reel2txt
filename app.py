@@ -180,10 +180,13 @@ def _parse_md(path):
 def merge_shipped(path, shipped_name):
     """Copy the shipped list if you have none; otherwise append entries you do not have yet (never edits yours)."""
     shipped = APP_DIR / shipped_name
-    if not shipped.exists():
+    example = APP_DIR / shipped_name.replace(".md", ".example.md")
+    if not path.exists():  # first run: start from the shipped list, or the example list
+        src = shipped if shipped.exists() else example
+        if src.exists():
+            shutil.copy(src, path)
         return
-    if not path.exists():
-        shutil.copy(shipped, path)
+    if not shipped.exists():  # an example list is only ever used to start from, never merged into yours
         return
     have = {_norm(p["name"]) for p in _parse_md(path)}
     text = shipped.read_text(encoding="utf-8")

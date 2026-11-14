@@ -13,6 +13,19 @@ paste video links (TikTok, Instagram, YouTube, X...), and the box does the rest:
 On each item's page, **Copy for Claude** copies a ready-to-paste block that also asks Claude to find the
 related chat. Attach a few frames from the `frames` folder if the picture matters.
 
+## What it can read
+- **Videos** (TikTok, Instagram, YouTube, X and many more): downloaded, transcribed, frames and on-screen text, summary.
+- **Text and image posts** (X, Instagram carousels): text and pictures, with OCR.
+- **Web pages and PDFs** (v2.4): readable text is pulled out and filed like everything else.
+- **Reddit threads** (v2.5): the post plus its comments.
+- **Anything that will not read** (v2.6): the box prints the page to PDF in a headless browser and reads that.
+- **Files already on the box**: Import page, videos, pictures and PDFs.
+- **Sorting**: every item gets project(s) and a category. `/apply` takes a sorting list from Claude, and `/for-claude.txt` is the file to paste into a chat.
+
+## Pages
+`/` add links, `/index.html` full library, `/projects.html` by project then by category, `/for-claude.txt` for chat,
+`/apply` sorting file, `/edit-projects`, `/edit-categories`, `/import`, `/index.txt`.
+
 ## Install (on the Linux box, once)
 
 1. Copy this `reel2txt` folder to the box (for example into your home folder).
@@ -26,6 +39,27 @@ related chat. Attach a few frames from the `frames` folder if the picture matter
 3. Open `http://<the box's Tailscale address>:8090` in Chrome.
 
 The first link is slower because the speech model downloads once.
+
+## Updating from GitHub
+First time on a box that already has the app (your `venv`, `config.env` and data are not touched):
+```
+cd ~/reel2txt && git init -b main && git remote add origin https://github.com/oo0speed0oo/reel2txt && git fetch origin && git reset --hard origin/main && bash update.sh
+```
+After that, every update is:
+```
+cd ~/reel2txt && git pull && bash update.sh
+```
+`update.sh` installs any new helpers and restarts the service. Your `projects.md` is private to your box (it is in `.gitignore`);
+`projects.example.md` is only the starting list for a new install.
+
+## Tips
+- **Reddit or another site blocks the box:** the app prints the page to PDF itself. If that also fails, print it in your own browser
+  (Save as PDF), put the PDF in a folder on the box, and use `/import` with "Include PDF documents".
+- **Browser for page-to-PDF:** `update.sh` installs it. If it says system libraries are missing: `sudo ./venv/bin/playwright install-deps chromium`.
+- **Instagram:** the reliable way is Firefox logged in on the box (or a cookies file). Automatic password login usually fails.
+- **A link fails:** press Retry. Still failing: the row shows the reason, and `journalctl --user -u reel2txt -n 50` has more.
+- **Sorting is off:** change it on the item page. The local AI learns from your recent corrections.
+- **Paste a Google search link?** It cannot be read. Open the result page and paste that link.
 
 ## Instagram
 

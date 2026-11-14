@@ -3,3 +3,4 @@ config.env
 *.bak
 __pycache__/
 *.zip
+projects.md
