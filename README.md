@@ -188,3 +188,13 @@ normal browser to clear the check, then retry.
 - Not used for Instagram, TikTok, YouTube, X, Facebook or Threads (a login wall would just be printed).
 - `update.sh` installs the browser (about 150 MB, once). If it says system libraries are missing, run once: `sudo ./venv/bin/playwright install-deps chromium`.
 - If a site still blocks even a real browser, the error says so; use your own browser's Save as PDF and Import as before.
+
+
+## v2.7: nightly review with a bigger model
+- Every night at `R2T_NIGHT_HOUR` (default 0, midnight) the box loads a bigger Ollama model (`R2T_NIGHT_MODEL`, default `qwen2.5:14b`),
+  re-reads every item, rewrites its summary and sorts it again. Items sorted by hand or by Claude keep their sorting but still get a better summary.
+- New links always go first; the review waits while the queue is busy. It stops after `R2T_NIGHT_MAX_HOURS` (default 6) and continues the next night.
+  The model is unloaded from the graphics cards when it finishes.
+- The first run downloads the model by itself (about 9 GB for `qwen2.5:14b`; it needs 25 GB free).
+- Page: `/night` shows progress, "Run the review now" and "Review everything again". An item reviewed this way says "sorted by the night review".
+- Too slow or too big? Set `R2T_NIGHT_MODEL=qwen2.5:7b` in `config.env` and restart. Leave it empty to turn the review off.

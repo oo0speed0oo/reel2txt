@@ -49,6 +49,9 @@ WHISPER_MODEL = env("R2T_WHISPER_MODEL", "small")
 WHISPER_DEVICE = env("R2T_DEVICE", "auto")  # auto | cuda | cpu
 OLLAMA_URL = env("R2T_OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = env("R2T_OLLAMA_MODEL", "")  # empty = pick smallest installed
+NIGHT_MODEL = env("R2T_NIGHT_MODEL", "")  # a bigger model for the nightly review. Empty = off
+NIGHT_HOUR = int(env("R2T_NIGHT_HOUR", "0"))  # local hour the review starts (0 = midnight)
+NIGHT_MAX_HOURS = float(env("R2T_NIGHT_MAX_HOURS", "6"))  # stop after this long; the rest waits for the next night
 FRAME_EVERY = float(env("R2T_FRAME_EVERY", "4"))
 MAX_FRAMES = int(env("R2T_MAX_FRAMES", "24"))
 MAX_HEIGHT = int(env("R2T_MAX_HEIGHT", "720"))
@@ -56,7 +59,7 @@ MIN_FREE_GB = float(env("R2T_MIN_FREE_GB", "5"))
 PAUSE_BETWEEN = float(env("R2T_PAUSE", "6"))
 BLOCK_TRANSCRIPT_CHARS = int(env("R2T_BLOCK_CHARS", "12000"))
 ALLOW_THIRD_PARTY = env("R2T_ALLOW_THIRD_PARTY", "0") == "1"  # fxtwitter.com fallback for X posts
-UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/2.6"
+UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/2.7"
 IMPORT_ROOT = Path(env("R2T_IMPORT_ROOT", str(Path.home()))).expanduser().resolve()  # import only from inside this
 DEFAULT_IMPORT = env("R2T_IMPORT_DIR", "~/Downloads")
 SECRETS_FILE = Path(env("R2T_SECRETS", "~/.reel2txt-secrets")).expanduser()  # IG_USER= / IG_PASS= lines, chmod 600
@@ -276,12 +279,13 @@ def few_shot_examples(n=6):
     return _fs_cache["text"]
 
 
-def classify(title, caption, plain, ocr):
-    """Returns (projects, how, category). Local Ollama first, keywords as backup."""
+def classify(title, caption, plain, ocr, model=None):
+    """Returns (projects, how, category). Local Ollama first, keywords as backup. model= is the nightly review (no fallback)."""
+    big = bool(model)
     projs = load_projects()
     cats = load_categories()
     material = (f"Title: {title}\nCaption/post text: {(caption or '')[:1500]}\n"
-                f"Spoken: {(plain or '')[:2500]}\nOn-screen text: {' '.join(ocr or [])[:500]}")
+                f"Spoken: {(plain or '')[:(6000 if big else 2500)]}\nOn-screen text: {' '.join(ocr or [])[:500]}")
     if not projs and not cats:
         return [], "none", ""
     listing = "\n".join(f"{i + 1}. {p['name']}: {p['what'][:170]} (keywords: {', '.join(p['keywords'][:8])})"
@@ -295,12 +299,15 @@ def classify(title, caption, plain, ocr):
               "\n\nSaved item:\n" + material +
               "\n\nChoose at most 2 projects (empty list if none really fits) with one short sentence on what would help, "
               "and exactly one category name. Reply with JSON only: "
-              '{"matches":[{"project":"<exact project name>","why":"<one short sentence>"}],"category":"<exact category name>"}')
+              + ('{"reasoning":"<one or two sentences: what is this really about?>","matches":[{"project":"<exact project name>","why":"<one short sentence>"}],"category":"<exact category name>"}'
+                 if big else
+                 '{"matches":[{"project":"<exact project name>","why":"<one short sentence>"}],"category":"<exact category name>"}'))
     try:
-        body = json.dumps({"model": pick_ollama_model(), "stream": False, "format": "json", "keep_alive": "2m",
-                           "options": {"num_ctx": 4096, "temperature": 0.1}, "prompt": prompt}).encode()
+        body = json.dumps({"model": model or pick_ollama_model(), "stream": False, "format": "json",
+                           "keep_alive": "10m" if big else "2m",
+                           "options": {"num_ctx": 8192 if big else 4096, "temperature": 0.1}, "prompt": prompt}).encode()
         req = urllib.request.Request(OLLAMA_URL + "/api/generate", body, {"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=240) as r:
+        with urllib.request.urlopen(req, timeout=1500 if big else 240) as r:
             data = json.loads(json.load(r).get("response", "{}"))
         out = []
         for m in data.get("matches", [])[:2]:
@@ -308,8 +315,10 @@ def classify(title, caption, plain, ocr):
             if n and n not in [o["name"] for o in out]:
                 out.append({"name": n, "why": str(m.get("why", ""))[:200]})
         cat = match_name(data.get("category"), cats) or keyword_category(material)
-        return out, "ai", cat
+        return out, ("ai-big" if big else "ai"), cat
     except Exception as e:
+        if big:
+            raise
         log("sorting by AI unavailable, using keywords:", e)
         return keyword_projects(material), "keywords", keyword_category(material)
 
@@ -468,22 +477,29 @@ def pick_ollama_model():
     return _omodel
 
 
-def summarize(title, caption, transcript):
-    """One generic line: what is this about. Local Ollama if possible, else a plain fallback."""
-    material = f"Title: {title}\nCaption: {caption}\nSpoken or on screen: {transcript[:3000]}"
+def summarize(title, caption, transcript, model=None):
+    """One generic line: what is this about. Local Ollama if possible, else a plain fallback.
+    With model= (the nightly review) it uses that bigger model, reads more text and may take minutes."""
+    big = bool(model)
+    material = f"Title: {title}\nCaption: {caption}\nSpoken or on screen: {transcript[:(7000 if big else 3000)]}"
     try:
         body = json.dumps({
-            "model": pick_ollama_model(), "stream": False, "keep_alive": "2m",
-            "options": {"num_ctx": 4096, "temperature": 0.2},
+            "model": model or pick_ollama_model(), "stream": False, "keep_alive": "10m" if big else "2m",
+            "options": {"num_ctx": 8192 if big else 4096, "temperature": 0.2},
             "prompt": ("Write ONE plain sentence (max 25 words, English) saying what this saved video, post, web page or document is "
-                       "about and what it would be useful for. No preamble, no quotes.\n\n" + material),
+                       "about and what it would be useful for. Use only what the text below says. Do not guess or invent details; "
+                       "if the text is too short or unclear, say what little it shows. No preamble, no quotes.\n\n" + material),
         }).encode()
         req = urllib.request.Request(OLLAMA_URL + "/api/generate", body, {"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=180) as r:
+        with urllib.request.urlopen(req, timeout=1500 if big else 180) as r:
             s = json.load(r).get("response", "").strip().splitlines()[0].strip()
         if s:
             return s[:300]
+        if big:
+            raise RuntimeError("empty answer")
     except Exception as e:
+        if big:
+            raise
         log("ollama summary unavailable:", e)
     base = re.sub(r"#\S+", "", caption or "").strip() or transcript.strip() or title or "(no text found)"
     return base.replace("\n", " ")[:160]
@@ -1160,7 +1176,7 @@ def html_to_doc(raw, ctype_header=""):
 
 
 def fetch_url(url, maxbytes=DOC_MAX_BYTES):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/2.6",
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/2.7",
                                                "Accept": "text/html,application/pdf,*/*;q=0.8",
                                                "Accept-Language": "en,ja;q=0.8"})
     with urllib.request.urlopen(req, timeout=40) as r:
@@ -1637,7 +1653,7 @@ def worker():
 
 # ---------------------------------------------------- re-sorting (v2)
 
-BYLABEL = {"ai": "sorted by the local AI", "keywords": "sorted by keywords", "you": "set by you", "claude": "sorted by Claude in chat"}
+BYLABEL = {"ai": "sorted by the local AI", "ai-big": "sorted by the night review (bigger model)", "keywords": "sorted by keywords", "you": "set by you", "claude": "sorted by Claude in chat"}
 HAND = ("you", "claude")  # sorted by hand or by Claude in chat: the automatic re-sort leaves these alone
 resort_state = {"running": False, "done": 0, "total": 0}
 
@@ -1677,6 +1693,198 @@ def resort_all():
     return True
 
 
+# ------------------------------------------------ nightly review with a bigger model (v2.7)
+
+NIGHT_FILE = DATA / "night.json"
+night_state = {"running": False, "done": 0, "total": 0, "step": "", "error": "", "started": "", "stop": False}
+
+
+def _night_load():
+    try:
+        return json.loads(NIGHT_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _night_save(**kw):
+    d = _night_load()
+    d.update(kw)
+    NIGHT_FILE.write_text(json.dumps(d, indent=1), encoding="utf-8")
+
+
+def ollama_installed():
+    with urllib.request.urlopen(OLLAMA_URL + "/api/tags", timeout=10) as r:
+        return [m["name"] for m in json.load(r).get("models", [])]
+
+
+def _same_model(want, have):
+    return have == want or have == want + ":latest" or (":" not in want and have.split(":")[0] == want)
+
+
+def ensure_night_model():
+    names = ollama_installed()
+    if any(_same_model(NIGHT_MODEL, n) for n in names):
+        return
+    if free_gb() < 25:
+        raise RuntimeError(f"Not enough disk space to download {NIGHT_MODEL} ({free_gb():.0f} GB free, need about 25).")
+    night_state["step"] = f"downloading {NIGHT_MODEL} (a one-time download, can take a while)"
+    log("downloading", NIGHT_MODEL)
+    req = urllib.request.Request(OLLAMA_URL + "/api/pull", json.dumps({"model": NIGHT_MODEL, "stream": False}).encode(),
+                                 {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=4 * 3600) as r:
+        r.read()
+
+
+def unload_night_model():
+    try:
+        req = urllib.request.Request(OLLAMA_URL + "/api/generate", json.dumps({"model": NIGHT_MODEL, "keep_alive": 0}).encode(),
+                                     {"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=30).read()
+    except Exception:
+        pass
+
+
+def _queue_busy():
+    with lock:
+        return any(i["status"] in ("queued", "running") for i in items)
+
+
+def night_review(force=False):
+    """Starts the review in the background. False if one is already running or no model is set."""
+    if not NIGHT_MODEL:
+        return False
+    with lock:
+        if night_state["running"]:
+            return False
+        night_state.update(running=True, done=0, total=0, step="starting", error="", stop=False,
+                           started=datetime.now().strftime("%Y-%m-%d %H:%M"))
+    _night_save(last_started=night_state["started"], last_date=datetime.now().strftime("%Y-%m-%d"))
+
+    def job():
+        t0 = time.time()
+        fails = redo = 0
+        result = ""
+        try:
+            ensure_night_model()
+            todo = [m for m in all_metas() if force or m.get("reviewed_by") != NIGHT_MODEL]
+            todo.sort(key=lambda m: m.get("added", ""), reverse=True)  # newest first
+            night_state["total"] = len(todo)
+            for m in todo:
+                if night_state["stop"]:
+                    break
+                if time.time() - t0 > NIGHT_MAX_HOURS * 3600:
+                    night_state["step"] = "time limit reached; the rest continues tomorrow night"
+                    break
+                while _queue_busy() and not night_state["stop"]:  # new links get priority
+                    night_state["step"] = "waiting for new links to finish"
+                    time.sleep(30)
+                night_state["step"] = f"reviewing {(m.get('title') or m['folder'])[:50]}"
+                outdir = LIB / m["folder"]
+                try:
+                    plain = read_plain(outdir)
+                    m["summary"] = summarize(m.get("title", ""), m.get("caption", ""), plain or "", model=NIGHT_MODEL)
+                    projs, by, cat = classify(m.get("title", ""), m.get("caption", ""), plain, m.get("ocr", []), model=NIGHT_MODEL)
+                    if m.get("projects_by") not in HAND:
+                        if [p["name"] for p in m.get("projects") or []] != [p["name"] for p in projs]:
+                            redo += 1
+                        m["projects"], m["projects_by"] = projs, by
+                    if m.get("category_by") not in HAND:
+                        m["category"], m["category_by"] = cat, by
+                    m["reviewed_by"] = NIGHT_MODEL
+                    m["reviewed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    save_meta_and_pages(outdir, m)
+                    fails = 0
+                except Exception as e:
+                    fails += 1
+                    log("night review failed for", m.get("folder"), e)
+                    if fails >= 5:
+                        raise RuntimeError(f"{NIGHT_MODEL} failed 5 times in a row ({str(e)[:150]}). It may be too big for this "
+                                           "machine. Try a smaller one, for example qwen2.5:7b, in config.env (R2T_NIGHT_MODEL).")
+                night_state["done"] += 1
+            rebuild_index()
+            result = (f"reviewed {night_state['done']} of {night_state['total']} items with {NIGHT_MODEL}; "
+                      f"{redo} got different projects")
+        except Exception as e:
+            night_state["error"] = str(e)[:400]
+            result = "failed: " + night_state["error"]
+            log("night review stopped:", e)
+        finally:
+            unload_night_model()
+            fin = datetime.now().strftime("%Y-%m-%d %H:%M")
+            _night_save(last_finished=fin, last_result=result)
+            night_state.update(running=False, step="")
+
+
+    threading.Thread(target=job, daemon=True).start()
+    return True
+
+
+def night_scheduler():
+    """Once a day, at NIGHT_HOUR, start the review (a restart in the same hour will not run it twice)."""
+    while True:
+        try:
+            now = datetime.now()
+            if NIGHT_MODEL and now.hour == NIGHT_HOUR and _night_load().get("last_date") != now.strftime("%Y-%m-%d") \
+                    and not night_state["running"]:
+                night_review()
+        except Exception as e:
+            log("night scheduler:", e)
+        time.sleep(60)
+
+
+NIGHT_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Night review</title>%CSS%</head><body><main>
+<p><a href="/">&larr; Add links</a> &middot; <a href="/projects.html">By project</a></p>
+<h1>Night review</h1>
+<p class="mut">Every night at <b id="hr"></b>:00 the box loads a bigger model, re-reads every item, rewrites the summary and sorts it again.
+Items you or Claude sorted by hand keep their sorting (they still get a better summary). New links are always handled first.</p>
+<p>Model: <b id="mod"></b> &middot; <span id="inst" class="mut"></span></p>
+<p><span id="st"></span></p>
+<p><button onclick="run(false)">Run the review now</button> <button class="sec" onclick="run(true)">Review everything again</button>
+<button class="sec" onclick="stop()">Stop</button></p>
+<p class="mut" id="last"></p>
+<script>
+function g(i){return document.getElementById(i)}
+function load(){fetch('/api/night').then(function(r){return r.json()}).then(function(j){
+g('hr').textContent=j.hour;g('mod').textContent=j.model||'(off: set R2T_NIGHT_MODEL in config.env)';
+g('inst').textContent=j.model?(j.installed?'installed':'not downloaded yet; it downloads on the first run (large)'):'';
+g('st').textContent=j.running?('Running: '+j.done+' of '+j.total+'. '+j.step):(j.error?('Stopped: '+j.error):'Idle.');
+g('last').textContent=j.last_finished?('Last run finished '+j.last_finished+': '+j.last_result):''})}
+function run(f){fetch('/api/night-run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:f})}).then(function(){setTimeout(load,500)})}
+function stop(){fetch('/api/night-stop',{method:'POST'}).then(function(){setTimeout(load,500)})}
+load();setInterval(load,5000);
+</script></main></body></html>""".replace("%CSS%", CSS)
+
+
+@app.get("/night")
+def night_page():
+    return NIGHT_PAGE
+
+
+@app.get("/api/night")
+def api_night():
+    d = _night_load()
+    try:
+        inst = bool(NIGHT_MODEL) and any(_same_model(NIGHT_MODEL, n) for n in ollama_installed())
+    except Exception:
+        inst = False
+    return jsonify(model=NIGHT_MODEL, hour=NIGHT_HOUR, installed=inst, running=night_state["running"],
+                   done=night_state["done"], total=night_state["total"], step=night_state["step"],
+                   error=night_state["error"], last_finished=d.get("last_finished", ""), last_result=d.get("last_result", ""))
+
+
+@app.post("/api/night-run")
+def api_night_run():
+    force = bool((request.get_json(force=True, silent=True) or {}).get("force"))
+    return jsonify(started=night_review(force=force))
+
+
+@app.post("/api/night-stop")
+def api_night_stop():
+    night_state["stop"] = True
+    return jsonify(ok=True)
+
+
 # --------------------------------------------------------------- web app
 
 
@@ -1701,7 +1909,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name=
 <p class="mut">Paste links (TikTok, Instagram, YouTube, X, web pages, PDF links...). Videos, text posts, image posts, articles and PDFs all work. The box reads them, files them in the library and says which of your projects they could help.</p>
 <textarea id="urls" rows="5" placeholder="One or many links, any text around them is fine"></textarea>
 <p><label><input type="checkbox" id="keep" checked> Keep the video file</label></p>
-<p><button onclick="add()">Add to queue</button> <a href="/index.html">Full library</a> &middot; <a href="/projects.html">By project</a> &middot; <a href="/edit-projects">Edit projects</a> &middot; <a href="/import">Import files</a> &middot; <a href="/apply">Apply sorting</a> &middot; <a href="/index.txt">index.txt</a></p>
+<p><button onclick="add()">Add to queue</button> <a href="/index.html">Full library</a> &middot; <a href="/projects.html">By project</a> &middot; <a href="/edit-projects">Edit projects</a> &middot; <a href="/import">Import files</a> &middot; <a href="/apply">Apply sorting</a> &middot; <a href="/night">Night review</a> &middot; <a href="/index.txt">index.txt</a></p>
 <p id="msg" class="mut"></p>
 <h2>Queue</h2>
 <table><tbody id="rows"></tbody></table>
@@ -1765,6 +1973,7 @@ def api_items():
         "whisper": f"{WHISPER_MODEL} ({_good_device or WHISPER_DEVICE})",
         "cookies": (COOKIES_BROWSER or ("file" if COOKIES_FILE else "off")),
         "summaries": OLLAMA_MODEL or "auto (smallest Ollama model)",
+        "night": f"{NIGHT_MODEL} at {NIGHT_HOUR}:00" if NIGHT_MODEL else "off",
         "projects": len(load_projects()), "instagram": ig_status()})
 
 
@@ -2089,5 +2298,6 @@ if __name__ == "__main__":
     load_categories()
     rebuild_index()
     threading.Thread(target=worker, daemon=True).start()
-    log(f"reel2txt v2.6 on http://{HOST}:{PORT}  data={DATA}")
+    threading.Thread(target=night_scheduler, daemon=True).start()
+    log(f"reel2txt v2.7 on http://{HOST}:{PORT}  data={DATA}")
     app.run(host=HOST, port=PORT, threaded=True)

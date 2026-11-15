@@ -16,6 +16,7 @@ PY
 echo "== 2/3 adding the new setting to config.env if missing =="
 grep -q R2T_ALLOW_THIRD_PARTY config.env || printf '\n# For X posts: if X itself refuses, also ask fxtwitter.com (a third party). 0 = no, 1 = yes\nR2T_ALLOW_THIRD_PARTY=0\n' >> config.env
 chmod +x set-instagram.sh remove-instagram.sh 2>/dev/null || true
+grep -q R2T_NIGHT_MODEL config.env || printf '\n# Nightly review with a bigger model (see /night). Empty = off. Needs about 9 GB of disk for the download.\nR2T_NIGHT_MODEL=qwen2.5:14b\nR2T_NIGHT_HOUR=0\n' >> config.env
 echo "== 3/3 restarting =="
 systemctl --user restart reel2txt
 sleep 3
