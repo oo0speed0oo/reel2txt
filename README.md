@@ -198,3 +198,7 @@ normal browser to clear the check, then retry.
 - The first run downloads the model by itself (about 9 GB for `qwen2.5:14b`; it needs 25 GB free).
 - Page: `/night` shows progress, "Run the review now" and "Review everything again". An item reviewed this way says "sorted by the night review".
 - Too slow or too big? Set `R2T_NIGHT_MODEL=qwen2.5:7b` in `config.env` and restart. Leave it empty to turn the review off.
+
+## v2.8: pick the AI, and a "Re-sort the files" button
+- `/night` now starts with **Which AI to use**: a list of the models installed in Ollama for the fast model (every new link) and the big model (night review and re-sort). You can also type a name to download one. It saves to `settings.json` in the data folder, takes effect immediately, and wins over `config.env`.
+- **Re-sort the files** (main page and `/night`): reads every item again with the big model (or the fast model) and sorts it. Hand-sorted items are left alone. New links go first, and the model is unloaded when it finishes.

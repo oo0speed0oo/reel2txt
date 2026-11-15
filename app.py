@@ -59,7 +59,7 @@ MIN_FREE_GB = float(env("R2T_MIN_FREE_GB", "5"))
 PAUSE_BETWEEN = float(env("R2T_PAUSE", "6"))
 BLOCK_TRANSCRIPT_CHARS = int(env("R2T_BLOCK_CHARS", "12000"))
 ALLOW_THIRD_PARTY = env("R2T_ALLOW_THIRD_PARTY", "0") == "1"  # fxtwitter.com fallback for X posts
-UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/2.7"
+UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/2.8"
 IMPORT_ROOT = Path(env("R2T_IMPORT_ROOT", str(Path.home()))).expanduser().resolve()  # import only from inside this
 DEFAULT_IMPORT = env("R2T_IMPORT_DIR", "~/Downloads")
 SECRETS_FILE = Path(env("R2T_SECRETS", "~/.reel2txt-secrets")).expanduser()  # IG_USER= / IG_PASS= lines, chmod 600
@@ -1176,7 +1176,7 @@ def html_to_doc(raw, ctype_header=""):
 
 
 def fetch_url(url, maxbytes=DOC_MAX_BYTES):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/2.7",
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/2.8",
                                                "Accept": "text/html,application/pdf,*/*;q=0.8",
                                                "Accept-Language": "en,ja;q=0.8"})
     with urllib.request.urlopen(req, timeout=40) as r:
@@ -1655,7 +1655,7 @@ def worker():
 
 BYLABEL = {"ai": "sorted by the local AI", "ai-big": "sorted by the night review (bigger model)", "keywords": "sorted by keywords", "you": "set by you", "claude": "sorted by Claude in chat"}
 HAND = ("you", "claude")  # sorted by hand or by Claude in chat: the automatic re-sort leaves these alone
-resort_state = {"running": False, "done": 0, "total": 0}
+resort_state = {"running": False, "done": 0, "total": 0, "error": "", "model": ""}
 
 
 def save_meta_and_pages(outdir, meta):
@@ -1663,20 +1663,25 @@ def save_meta_and_pages(outdir, meta):
     write_item_files(outdir, meta, read_plain(outdir))
 
 
-def resort_all():
+def resort_all(model=None):
     with lock:
         if resort_state["running"]:
             return False
-        resort_state.update(running=True, done=0, total=0)
+        resort_state.update(running=True, done=0, total=0, error="", model=model or "")
 
     def job():
         try:
             metas = [m for m in all_metas() if m.get("projects_by") not in HAND or m.get("category_by") not in HAND]
             resort_state["total"] = len(metas)
+            bad = 0
             for m in metas:
                 outdir = LIB / m["folder"]
+                if model:
+                    while _queue_busy():  # new links go first
+                        time.sleep(20)
                 try:
-                    projs, by, cat = classify(m.get("title", ""), m.get("caption", ""), read_plain(outdir), m.get("ocr", []))
+                    projs, by, cat = classify(m.get("title", ""), m.get("caption", ""), read_plain(outdir), m.get("ocr", []), model=model)
+                    bad = 0
                     if m.get("projects_by") not in HAND:
                         m["projects"], m["projects_by"] = projs, by
                     if m.get("category_by") not in HAND:
@@ -1684,16 +1689,42 @@ def resort_all():
                     save_meta_and_pages(outdir, m)
                 except Exception as e:
                     log("re-sort failed for", m.get("folder"), e)
+                    bad += 1
+                    if bad >= 5:
+                        resort_state["error"] = f"{model} failed 5 times in a row ({str(e)[:120]}). Pick a smaller model."
+                        break
                 resort_state["done"] += 1
             rebuild_index()
         finally:
             resort_state["running"] = False
+            if model:
+                try:
+                    urllib.request.urlopen(urllib.request.Request(OLLAMA_URL + "/api/generate", json.dumps({"model": model, "keep_alive": 0}).encode(),
+                                                                  {"Content-Type": "application/json"}), timeout=30).read()
+                except Exception:
+                    pass
 
     threading.Thread(target=job, daemon=True).start()
     return True
 
 
 # ------------------------------------------------ nightly review with a bigger model (v2.7)
+
+SETTINGS_FILE = DATA / "settings.json"
+
+
+def load_settings():
+    """Models chosen on the /night page. They win over config.env and apply without a restart."""
+    global OLLAMA_MODEL, NIGHT_MODEL, _omodel
+    try:
+        d = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if "fast" in d:
+        OLLAMA_MODEL, _omodel = d["fast"], None
+    if "night" in d:
+        NIGHT_MODEL = d["night"]
+
 
 NIGHT_FILE = DATA / "night.json"
 night_state = {"running": False, "done": 0, "total": 0, "step": "", "error": "", "started": "", "stop": False}
@@ -1833,32 +1864,93 @@ def night_scheduler():
 
 
 NIGHT_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Night review</title>%CSS%</head><body><main>
+<title>AI and night review</title>%CSS%</head><body><main>
 <p><a href="/">&larr; Add links</a> &middot; <a href="/projects.html">By project</a></p>
+<h1>Which AI to use</h1>
+<p class="mut">Both are Ollama models on this box. Changes apply right away, no restart.</p>
+<p><b>Fast model</b> (every new link, instantly): <select id="fast"></select></p>
+<p><b>Big model</b> (night review and "Re-sort the files"): <select id="night"></select>
+ or type another name: <input id="own" placeholder="for example qwen2.5:14b" size="22"></p>
+<p><button onclick="saveAI()">Save</button> <span id="sm" class="mut"></span></p>
+<p class="mut" id="warn"></p>
+<hr>
+<h1>Re-sort the files</h1>
+<p class="mut">Reads every item again with the big model and sorts it into projects and categories. Items you or Claude sorted by hand are left alone.</p>
+<p><button onclick="resort(true)">Re-sort the files (big model)</button> <button class="sec" onclick="resort(false)">Re-sort with the fast model</button></p>
+<p id="rs" class="mut"></p>
+<hr>
 <h1>Night review</h1>
-<p class="mut">Every night at <b id="hr"></b>:00 the box loads a bigger model, re-reads every item, rewrites the summary and sorts it again.
-Items you or Claude sorted by hand keep their sorting (they still get a better summary). New links are always handled first.</p>
-<p>Model: <b id="mod"></b> &middot; <span id="inst" class="mut"></span></p>
+<p class="mut">Every night at <b id="hr"></b>:00 the box loads the big model, re-reads every item, rewrites the summary and sorts it again.
+Hand-sorted items keep their sorting (they still get a better summary). New links are always handled first.</p>
+<p>Big model: <b id="mod"></b> &middot; <span id="inst" class="mut"></span></p>
 <p><span id="st"></span></p>
 <p><button onclick="run(false)">Run the review now</button> <button class="sec" onclick="run(true)">Review everything again</button>
 <button class="sec" onclick="stop()">Stop</button></p>
 <p class="mut" id="last"></p>
 <script>
 function g(i){return document.getElementById(i)}
+function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
+var haveAI=false;
+function loadAI(){fetch('/api/ai').then(function(r){return r.json()}).then(function(j){
+ var f='<option value="">Automatic (the smallest one installed)</option>',n='<option value="">Off (no big model)</option>';
+ j.installed.forEach(function(m){f+='<option value="'+esc(m)+'"'+(m===j.fast?' selected':'')+'>'+esc(m)+'</option>';n+='<option value="'+esc(m)+'"'+(m===j.night?' selected':'')+'>'+esc(m)+'</option>'});
+ if(j.night&&j.installed.indexOf(j.night)<0){n+='<option value="'+esc(j.night)+'" selected>'+esc(j.night)+' (not downloaded yet)</option>'}
+ g('fast').innerHTML=f;g('night').innerHTML=n;
+ g('warn').textContent=j.ollama_ok?'':'Could not reach Ollama on this box, so the list is empty. You can still type a name.'})}
+function saveAI(){var night=g('own').value.trim()||g('night').value;
+ fetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fast:g('fast').value,night:night})})
+ .then(function(r){return r.json()}).then(function(j){g('sm').textContent=j.error?j.error:'Saved.';g('own').value='';loadAI();load()})}
 function load(){fetch('/api/night').then(function(r){return r.json()}).then(function(j){
-g('hr').textContent=j.hour;g('mod').textContent=j.model||'(off: set R2T_NIGHT_MODEL in config.env)';
-g('inst').textContent=j.model?(j.installed?'installed':'not downloaded yet; it downloads on the first run (large)'):'';
-g('st').textContent=j.running?('Running: '+j.done+' of '+j.total+'. '+j.step):(j.error?('Stopped: '+j.error):'Idle.');
-g('last').textContent=j.last_finished?('Last run finished '+j.last_finished+': '+j.last_result):''})}
+ g('hr').textContent=j.hour;g('mod').textContent=j.model||'(off)';
+ g('inst').textContent=j.model?(j.installed?'installed':'not downloaded yet; it downloads on the first run (large)'):'';
+ g('st').textContent=j.running?('Running: '+j.done+' of '+j.total+'. '+j.step):(j.error?('Stopped: '+j.error):'Idle.');
+ g('last').textContent=j.last_finished?('Last run finished '+j.last_finished+': '+j.last_result):'';
+ var r=j.resort;g('rs').textContent=r.running?('Re-sorting: '+r.done+' of '+r.total+(r.model?' with '+r.model:' with the fast model')):(r.error?('Stopped: '+r.error):(r.total?('Last re-sort finished: '+r.done+' of '+r.total):''))})}
+function resort(big){fetch('/api/resort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({big:big})}).then(function(r){return r.json()}).then(function(j){
+ if(j.error){g('rs').textContent=j.error}else if(!j.started){g('rs').textContent='A re-sort is already running.'}setTimeout(load,600)})}
 function run(f){fetch('/api/night-run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:f})}).then(function(){setTimeout(load,500)})}
 function stop(){fetch('/api/night-stop',{method:'POST'}).then(function(){setTimeout(load,500)})}
-load();setInterval(load,5000);
+if(location.search.indexOf('e=1')>=0){g('rs').textContent='Pick a big model above and press Save first.'}
+loadAI();load();setInterval(load,5000);
 </script></main></body></html>""".replace("%CSS%", CSS)
 
 
 @app.get("/night")
 def night_page():
     return NIGHT_PAGE
+
+
+@app.get("/api/ai")
+def api_ai_get():
+    try:
+        names = [n for n in ollama_installed() if "embed" not in n.lower()]
+    except Exception as e:
+        names = []
+    return jsonify(installed=names, fast=OLLAMA_MODEL, night=NIGHT_MODEL, hour=NIGHT_HOUR, ollama_ok=bool(names))
+
+
+@app.post("/api/ai")
+def api_ai_set():
+    global OLLAMA_MODEL, NIGHT_MODEL, _omodel
+    d = request.get_json(force=True, silent=True) or {}
+    ok = re.compile(r"^[A-Za-z0-9_.:/\-]{1,80}$")
+    new = {}
+    for key in ("fast", "night"):
+        if key in d:
+            v = str(d[key] or "").strip()
+            if v and not ok.match(v):
+                return jsonify(error=f"'{v}' is not a model name"), 400
+            new[key] = v
+    cur = {}
+    try:
+        cur = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    cur.update(new)
+    SETTINGS_FILE.write_text(json.dumps(cur, indent=1), encoding="utf-8")
+    load_settings()
+    _fs_cache["t"] = 0
+    return jsonify(ok=True, fast=OLLAMA_MODEL, night=NIGHT_MODEL)
 
 
 @app.get("/api/night")
@@ -1870,7 +1962,8 @@ def api_night():
         inst = False
     return jsonify(model=NIGHT_MODEL, hour=NIGHT_HOUR, installed=inst, running=night_state["running"],
                    done=night_state["done"], total=night_state["total"], step=night_state["step"],
-                   error=night_state["error"], last_finished=d.get("last_finished", ""), last_result=d.get("last_result", ""))
+                   error=night_state["error"], last_finished=d.get("last_finished", ""), last_result=d.get("last_result", ""),
+                   resort=dict(resort_state))
 
 
 @app.post("/api/night-run")
@@ -1909,7 +2002,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name=
 <p class="mut">Paste links (TikTok, Instagram, YouTube, X, web pages, PDF links...). Videos, text posts, image posts, articles and PDFs all work. The box reads them, files them in the library and says which of your projects they could help.</p>
 <textarea id="urls" rows="5" placeholder="One or many links, any text around them is fine"></textarea>
 <p><label><input type="checkbox" id="keep" checked> Keep the video file</label></p>
-<p><button onclick="add()">Add to queue</button> <a href="/index.html">Full library</a> &middot; <a href="/projects.html">By project</a> &middot; <a href="/edit-projects">Edit projects</a> &middot; <a href="/import">Import files</a> &middot; <a href="/apply">Apply sorting</a> &middot; <a href="/night">Night review</a> &middot; <a href="/index.txt">index.txt</a></p>
+<p><button onclick="add()">Add to queue</button> <button class="sec" onclick="fetch('/api/resort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({big:true})}).then(function(r){return r.json()}).then(function(j){location='/night'+(j.error?'?e=1':'')})">Re-sort the files</button> <a href="/night">Which AI</a> &middot; <a href="/index.html">Full library</a> &middot; <a href="/projects.html">By project</a> &middot; <a href="/edit-projects">Edit projects</a> &middot; <a href="/import">Import files</a> &middot; <a href="/apply">Apply sorting</a> &middot; <a href="/index.txt">index.txt</a></p>
 <p id="msg" class="mut"></p>
 <h2>Queue</h2>
 <table><tbody id="rows"></tbody></table>
@@ -2093,7 +2186,13 @@ def import_page():
 
 @app.post("/api/resort")
 def api_resort():
-    return jsonify(started=resort_all())
+    d = request.get_json(force=True, silent=True) or {}
+    model = None
+    if d.get("big"):
+        model = NIGHT_MODEL or None  # the bigger model, right now
+        if not model:
+            return jsonify(started=False, error="No bigger model is chosen yet. Pick one on the Which AI page (/night).")
+    return jsonify(started=resort_all(model))
 
 
 @app.get("/api/resort-status")
@@ -2294,10 +2393,11 @@ if __name__ == "__main__":
     load_state()
     merge_shipped(PROJECTS_FILE, "projects.md")
     merge_shipped(CATEGORIES_FILE, "categories.md")
+    load_settings()
     load_projects()
     load_categories()
     rebuild_index()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=night_scheduler, daemon=True).start()
-    log(f"reel2txt v2.7 on http://{HOST}:{PORT}  data={DATA}")
+    log(f"reel2txt v2.8 on http://{HOST}:{PORT}  data={DATA}")
     app.run(host=HOST, port=PORT, threaded=True)
