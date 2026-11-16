@@ -60,7 +60,7 @@ MIN_FREE_GB = float(env("R2T_MIN_FREE_GB", "5"))
 PAUSE_BETWEEN = float(env("R2T_PAUSE", "6"))
 BLOCK_TRANSCRIPT_CHARS = int(env("R2T_BLOCK_CHARS", "12000"))
 ALLOW_THIRD_PARTY = env("R2T_ALLOW_THIRD_PARTY", "0") == "1"  # fxtwitter.com fallback for X posts
-UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.1"
+UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.2"
 IMPORT_ROOT = Path(env("R2T_IMPORT_ROOT", str(Path.home()))).expanduser().resolve()  # import only from inside this
 DEFAULT_IMPORT = env("R2T_IMPORT_DIR", "~/Downloads")
 SECRETS_FILE = Path(env("R2T_SECRETS", "~/.reel2txt-secrets")).expanduser()  # IG_USER= / IG_PASS= lines, chmod 600
@@ -753,10 +753,15 @@ if(window.top!==window){var n=document.getElementById('nav');if(n)n.style.displa
 
 
 SPLIT_JS = r"""<script>
-(function(){var wide=window.matchMedia('(min-width:1000px)');
+(function(){
+function close(){var pane=document.getElementById('pane');if(!pane)return;pane.classList.remove('open');window.selFolder='';
+ document.querySelectorAll('tr.sel').forEach(function(r){r.classList.remove('sel')});
+ pane.innerHTML='<div class="empty">Click an item on the left and it opens here.</div>'}
+window.closePane=close;
 function pick(folder,tr){var pane=document.getElementById('pane');if(!pane)return false;
- if(!wide.matches){location='/library/'+encodeURIComponent(folder)+'/index.html';return true}
- pane.innerHTML='<iframe src="/library/'+encodeURIComponent(folder)+'/index.html"></iframe>';
+ var u='/library/'+encodeURIComponent(folder)+'/index.html';
+ pane.innerHTML='<div class="ptop"><button class="sec closeb" onclick="closePane()">&larr; Close</button><a href="'+u+'" target="_blank">Open on its own page</a></div><iframe src="'+u+'"></iframe>';
+ pane.classList.add('open');
  window.selFolder=folder;document.querySelectorAll('tr.sel').forEach(function(r){r.classList.remove('sel')});if(tr)tr.classList.add('sel');return true}
 window.pickItem=pick;
 document.addEventListener('click',function(ev){var tr=ev.target.closest('tr[data-folder]');if(!tr)return;
@@ -765,7 +770,7 @@ document.addEventListener('click',function(ev){var tr=ev.target.closest('tr[data
  if(ev.metaKey||ev.ctrlKey||ev.shiftKey)return;
  ev.preventDefault();pick(tr.dataset.folder,tr)})})();
 window.addEventListener('message',function(ev){if(ev.data!=='r2t-deleted')return;var tr=document.querySelector('tr.sel');if(tr)tr.remove();
- var pane=document.getElementById('pane');if(pane)pane.innerHTML='<div class="empty">Deleted. It stays in the trash on the box for 30 days.</div>';if(window.load)window.load()});
+ var pane=document.getElementById('pane');if(pane){pane.classList.remove('open');pane.innerHTML='<div class="empty">Deleted. It stays in the trash on the box for 30 days.</div>'};if(window.load)window.load()});
 window.copyFrom=function(url,btn){var old=btn.textContent;fetch(url).then(function(r){return r.text()}).then(function(t){
  var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();
  var ok=false;try{ok=document.execCommand('copy')}catch(e){}document.body.removeChild(ta);
@@ -805,15 +810,19 @@ video{max-width:100%;border-radius:8px}
 a.btn,button.danger{display:inline-block;border-radius:8px;padding:8px 16px;font:inherit;text-decoration:none;cursor:pointer;white-space:nowrap}
 a.btn{background:var(--acc);color:#fff;border:0}
 button.danger{background:transparent;color:#d33a2f;border:1px solid #d33a2f}
-.pane{display:none}
-@media(min-width:1000px){
-main.wide{max-width:none;padding-left:20px;padding-right:20px}
-.split{display:grid;grid-template-columns:minmax(420px,1fr) minmax(480px,1.15fr);gap:22px;align-items:start}
-.pane{display:block;position:sticky;top:10px;height:calc(100vh - 24px);border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--card)}
-.pane iframe{width:100%;height:100%;border:0;background:var(--bg)}
-.pane .empty{padding:28px;color:var(--mut)}
+.pane{display:none;position:fixed;top:0;right:0;bottom:0;left:0;z-index:50;background:var(--bg);flex-direction:column}
+.pane.open{display:flex}
+.pane .ptop{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--card)}
+.pane iframe{flex:1;width:100%;border:0;background:var(--bg)}
+.pane .empty{display:none}
 tr[data-folder]{cursor:pointer}tr[data-folder]:hover{background:var(--card)}
 tr.sel{background:var(--card);box-shadow:inset 4px 0 0 var(--acc)}
+@media(min-width:900px){
+main.wide{max-width:none;padding-left:20px;padding-right:20px}
+.split{display:grid;grid-template-columns:minmax(340px,1fr) minmax(380px,1.1fr);gap:22px;align-items:start}
+.pane,.pane.open{display:flex;position:sticky;top:10px;left:auto;right:auto;bottom:auto;height:calc(100vh - 24px);border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--card);z-index:1}
+.pane .empty{display:block;padding:28px;color:var(--mut)}
+.pane .closeb{display:none}
 .split .xs{display:none}}
 .note{border-left:4px solid #e0a500;background:var(--card);padding:8px 12px;border-radius:6px;margin:10px 0}
 </style>"""
@@ -1389,7 +1398,7 @@ def html_to_doc(raw, ctype_header=""):
 
 
 def fetch_url(url, maxbytes=DOC_MAX_BYTES):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.1",
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.2",
                                                "Accept": "text/html,application/pdf,*/*;q=0.8",
                                                "Accept-Language": "en,ja;q=0.8"})
     with urllib.request.urlopen(req, timeout=40) as r:
@@ -2826,5 +2835,5 @@ if __name__ == "__main__":
     rebuild_index()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=night_scheduler, daemon=True).start()
-    log(f"reel2txt v3.1 on http://{HOST}:{PORT}  data={DATA}")
+    log(f"reel2txt v3.2 on http://{HOST}:{PORT}  data={DATA}")
     app.run(host=HOST, port=PORT, threaded=True)

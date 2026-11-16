@@ -217,3 +217,7 @@ normal browser to clear the check, then retry.
 - **Star:** every item page has **Talk about this later**. `/index.html?starred=1` lists them, and **Copy starred for Claude** copies the full text of all starred items for a chat.
 - **Delete this item:** on the item page (and in the side panel). It asks first, then moves the item to `trash/` in the data folder. Trash is emptied after 30 days. The queue row goes too.
 - **Copy library for Claude** on the main page copies `for-claude.txt`. Starred items are marked STARRED in it.
+
+## v3.2: the side panel works in any window size
+- Wide window (about 900 px and up): two columns, list on the left and the item on the right.
+- Narrower window: the item slides over the page with a **Close** button. A click never leaves the list.
