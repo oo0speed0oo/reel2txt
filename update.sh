@@ -5,6 +5,9 @@ cd "$(dirname "$0")"
 test -x venv/bin/pip || { echo "No venv found here. Run this inside your reel2txt folder."; exit 1; }
 echo "== 1/3 installing the new helper (gallery-dl) =="
 ./venv/bin/pip install -r requirements.txt
+echo "== updating the YouTube helper =="
+./venv/bin/pip install -U "yt-dlp[default]" -q || echo "(could not update yt-dlp)"
+if command -v deno >/dev/null 2>&1 || command -v node >/dev/null 2>&1; then echo "JavaScript runtime found (YouTube needs one)"; else echo "NOTE: YouTube works best with Node.js installed. Run once: sudo apt install -y nodejs"; fi
 echo "== installing the page-to-PDF browser (one time, about 150 MB) =="
 ./venv/bin/playwright install chromium || echo "(browser download failed; plain pages still work. Run: ./venv/bin/playwright install chromium)"
 ./venv/bin/python - <<'PY' || echo "NOTE: the browser needs system libraries. Run once:  sudo ./venv/bin/playwright install-deps chromium"

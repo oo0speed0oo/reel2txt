@@ -60,7 +60,7 @@ MIN_FREE_GB = float(env("R2T_MIN_FREE_GB", "5"))
 PAUSE_BETWEEN = float(env("R2T_PAUSE", "6"))
 BLOCK_TRANSCRIPT_CHARS = int(env("R2T_BLOCK_CHARS", "12000"))
 ALLOW_THIRD_PARTY = env("R2T_ALLOW_THIRD_PARTY", "0") == "1"  # fxtwitter.com fallback for X posts
-UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.0"
+UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.1"
 IMPORT_ROOT = Path(env("R2T_IMPORT_ROOT", str(Path.home()))).expanduser().resolve()  # import only from inside this
 DEFAULT_IMPORT = env("R2T_IMPORT_DIR", "~/Downloads")
 SECRETS_FILE = Path(env("R2T_SECRETS", "~/.reel2txt-secrets")).expanduser()  # IG_USER= / IG_PASS= lines, chmod 600
@@ -333,7 +333,7 @@ def download(url, workdir, use_cookies=True, force=False):
     opts = {
         "quiet": True, "noprogress": True, "no_warnings": True, "noplaylist": True,
         "retries": 3, "socket_timeout": 30,
-        "format": f"bv*[height<={MAX_HEIGHT}]+ba/b[height<={MAX_HEIGHT}]/b",
+        "format": f"bv*[height<={MAX_HEIGHT}]+ba/b[height<={MAX_HEIGHT}]/bv*+ba/b/best",
         "merge_output_format": "mp4",
         "outtmpl": str(workdir / "video.%(ext)s"),
     }
@@ -739,6 +739,19 @@ def convert_images(files, outdir):
 
 # ----------------------------------------------------------- page output
 
+ITEM_JS = r"""<script>
+var F=%F%,STARRED=%STAR%;
+function paintStar(){var b=document.getElementById('starb');if(b)b.textContent=STARRED?'★ Starred: talk about this later (click to undo)':'☆ Talk about this later'}
+function star(){STARRED=!STARRED;paintStar();fetch('/api/star/'+encodeURIComponent(F),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({star:STARRED})})}
+function delItem(){if(!confirm('Delete this item?\n\nIts files (video, frames, text) move to the trash on the box and are removed for good after 30 days.'))return;
+ fetch('/api/delete/'+encodeURIComponent(F),{method:'POST'}).then(function(r){return r.json()}).then(function(j){
+  if(!j.ok){alert(j.error||'Could not delete');return}
+  if(window.top!==window){window.parent.postMessage('r2t-deleted','*')}else{location='/index.html'}})}
+paintStar();
+if(window.top!==window){var n=document.getElementById('nav');if(n)n.style.display='none'}
+</script>"""
+
+
 SPLIT_JS = r"""<script>
 (function(){var wide=window.matchMedia('(min-width:1000px)');
 function pick(folder,tr){var pane=document.getElementById('pane');if(!pane)return false;
@@ -751,6 +764,13 @@ document.addEventListener('click',function(ev){var tr=ev.target.closest('tr[data
  if(a&&!(a.getAttribute('href')||'').match(/\/library\/.*index\.html$|^library\/.*index\.html$/))return;
  if(ev.metaKey||ev.ctrlKey||ev.shiftKey)return;
  ev.preventDefault();pick(tr.dataset.folder,tr)})})();
+window.addEventListener('message',function(ev){if(ev.data!=='r2t-deleted')return;var tr=document.querySelector('tr.sel');if(tr)tr.remove();
+ var pane=document.getElementById('pane');if(pane)pane.innerHTML='<div class="empty">Deleted. It stays in the trash on the box for 30 days.</div>';if(window.load)window.load()});
+window.copyFrom=function(url,btn){var old=btn.textContent;fetch(url).then(function(r){return r.text()}).then(function(t){
+ var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();
+ var ok=false;try{ok=document.execCommand('copy')}catch(e){}document.body.removeChild(ta);
+ if(!ok&&navigator.clipboard){navigator.clipboard.writeText(t);ok=true}
+ btn.textContent=ok?'Copied':'Could not copy';setTimeout(function(){btn.textContent=old},2000)})};
 </script>"""
 
 COPY_JS = """<script>
@@ -902,6 +922,8 @@ def write_item_files(outdir, meta, plain):
                '<script>function getVid(){document.getElementById("gvm").textContent="Working... (a minute or two)";'
                'fetch("/api/fetch-video/' + quote(meta["folder"]) + '",{method:"POST"}).then(function(r){return r.json()}).then(function(j){'
                'document.getElementById("gvm").textContent=j.started?"Started. Reload this page in a minute.":(j.error||"Could not start.")})}</script>')
+        if not meta.get("has_video") and meta.get("video_unavailable"):
+            vid = '<p class="mut">' + e(meta.get("note") or "No video file is available for this one.") + '</p>'
         media = f'<h2>Frames</h2><div class="frames">{imgs or "<span class=mut>none</span>"}</div><h2>Video</h2>{vid}'
     sub = (f'{e(meta.get("uploader", ""))} &middot; {e(meta.get("date", ""))} &middot; ' +
            (f'{meta.get("pages") or ""} {"pages" if meta.get("pages") else "web page"}' if doc else
@@ -909,6 +931,8 @@ def write_item_files(outdir, meta, plain):
     files = ('<a href="summary.md">summary.md</a> &middot; <a href="meta.json">meta.json</a>' +
              (' &middot; <a href="text.txt">text.txt</a>' + (' &middot; <a href="original.pdf">original.pdf</a>' if meta.get("doc_file") else '')
               if doc else '' if post else ' &middot; <a href="transcript.txt">transcript.txt</a>'))
+    notehtml = f'<div class="note">{e(meta["note"])}</div>' if meta.get("note") and meta.get("kind") == "video" else ""
+    item_js = ITEM_JS.replace("%F%", json.dumps(meta["folder"])).replace("%STAR%", "true" if meta.get("star") else "false")
     fit = meta.get("fit") or []
     fithtml = ""
     if fit:
@@ -921,12 +945,13 @@ def write_item_files(outdir, meta, plain):
 <h1>{e(meta.get('title') or meta['folder'])}</h1>
 <p class="mut">{sub} &middot; {('<a href="' + e(meta['url']) + '">original link</a>') if str(meta['url']).startswith('http') else ('file: ' + e(meta['url']))}</p>
 <p>{e(meta.get('summary', ''))}</p>
-{use}{fithtml}{form}
-<p><button onclick="copyText('blk',this)">Copy for Claude</button></p>
+{notehtml}{use}{fithtml}{form}
+<p><button onclick="copyText('blk',this)">Copy for Claude</button> <button class="sec" id="starb" onclick="star()"></button>
+<button class="danger" onclick="delItem()">Delete this item...</button></p>
 <textarea id="blk" readonly rows="10">{e(block)}</textarea>
 {media}
 <h2>Files</h2><p>{files}</p>
-</main>{COPY_JS}<script>if(window.top!==window){{var n=document.getElementById('nav');if(n)n.style.display='none'}}</script></body></html>"""
+</main>{COPY_JS}{item_js}</body></html>"""
     (outdir / "index.html").write_text(page, encoding="utf-8")
 
 
@@ -954,22 +979,30 @@ def rebuild_index():
         f = quote(m["folder"])
         chips = "".join(f'<span class="tag">{e(p["name"])}</span>' for p in ps) or '<span class="mut">No project</span>'
         rows.append(
-            f'<tr data-folder="{e(m["folder"])}" data-t="{e((m["folder"] + " " + m.get("summary", "") + " " + m.get("uploader", "") + " " + " ".join(p["name"] for p in ps) + " " + m.get("category", "")).lower())}">'
+            f'<tr data-folder="{e(m["folder"])}" data-star="{1 if m.get("star") else 0}" data-t="{e((m["folder"] + " " + m.get("summary", "") + " " + m.get("uploader", "") + " " + " ".join(p["name"] for p in ps) + " " + m.get("category", "")).lower())}">'
             f'<td>{e(m.get("added", "")[:10])}</td>'
             f'<td><a href="library/{f}/index.html">{e(m["folder"])}</a></td>'
-            f'<td class="xs">{e(m.get("platform", ""))} {kind}</td><td>{e(m.get("summary", ""))}</td><td>{chips}</td><td class="mut xs">{e(m.get("category", ""))}</td>'
+            f'<td class="xs">{e(m.get("platform", ""))} {kind}</td><td>{"&#9733; " if m.get("star") else ""}{e(m.get("summary", ""))}</td><td>{chips}</td><td class="mut xs">{e(m.get("category", ""))}</td>'
             f'<td class="xs"><a href="library/{f}/summary.md">summary</a></td></tr>')
     (DATA / "index.txt").write_text("\n".join(txt), encoding="utf-8")
+    starred = [m for m in metas if m.get("star")]
+    (DATA / "starred.txt").write_text(
+        ("These are the items Michael starred to talk about. Please go through them one at a time.\n\n" +
+         "\n\n==========\n\n".join(build_block(m, read_plain(LIB / m["folder"])) for m in starred)) if starred
+        else "(Nothing is starred yet. Open an item and press 'Talk about this later'.)", encoding="utf-8")
     nav = '<p><a href="/">&larr; Add links</a> &middot; <a href="projects.html">By project</a> &middot; <a href="index.txt">index.txt</a></p>'
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>reel2txt library</title>{CSS}</head><body><main class="wide"><div class="split"><div class="left">{nav}
 <h1>Library ({len(metas)})</h1>
 <input type="search" id="q" placeholder="Search folder, summary, uploader, project" oninput="f()">
+<p><label><input type="checkbox" id="stonly" onchange="f()"> Starred only (talk about later)</label>
+<button class="sec" onclick="copyFrom('/starred.txt',this)">Copy starred for Claude</button></p>
 <p class="mut">Click any row to read it on the right.</p>
 <table><tr><th>Added</th><th>Folder</th><th class="xs">Source</th><th>What it is</th><th>Use in</th><th class="xs">Category</th><th class="xs">Files</th></tr>{''.join(rows)}</table>
 </div><aside class="pane" id="pane"><div class="empty">Click an item on the left and it opens here.</div></aside></div>
-<script>function f(){{var q=document.getElementById('q').value.toLowerCase();
-document.querySelectorAll('tr[data-t]').forEach(function(r){{r.style.display=r.dataset.t.indexOf(q)<0?'none':''}})}}</script>
+<script>function f(){{var q=document.getElementById('q').value.toLowerCase(),st=document.getElementById('stonly').checked;
+document.querySelectorAll('tr[data-t]').forEach(function(r){{r.style.display=(r.dataset.t.indexOf(q)<0||(st&&r.dataset.star!=='1'))?'none':''}})}}
+if(location.search.indexOf('starred=1')>=0){{document.getElementById('stonly').checked=true;f()}}</script>
 {SPLIT_JS}</main></body></html>"""
     (DATA / "index.html").write_text(page, encoding="utf-8")
 
@@ -1017,13 +1050,14 @@ def write_for_claude(metas, projs):
     t = ["READ ME FIRST (for Claude): this is the owner's saved-links library from their Linux box.",
          "Job: sort items, answer questions about them, or reply with corrections in this exact line format, one per line:",
          "    folder | project 1; project 2 | category | one short reason",
-         "Use project and category names exactly as listed below. Leave the project part as - if no project fits.", "",
+         "Use project and category names exactly as listed below. Leave the project part as - if no project fits.",
+         "Items marked STARRED are ones Michael wants to talk about.", "",
          "PROJECTS (name: what it is)"]
     t += [f"- {p['name']}{' [suggested]' if p.get('status', '').lower().startswith('suggest') else ''}: {p['what'][:200]}" for p in projs]
     t += ["", "CATEGORIES (used when no project fits, and as a second label)"] + [f"- {c['name']}: {c['what'][:120]}" for c in cats]
     t += ["", f"ITEMS ({len(metas)}), newest first: folder | projects | category | summary"]
     for m in metas:
-        t.append(f"{m['folder']} | {'; '.join(p['name'] for p in m.get('projects') or []) or '-'} | {m.get('category') or '-'} | {(m.get('summary') or '')[:220]}")
+        t.append(f"{m['folder']} | {'; '.join(p['name'] for p in m.get('projects') or []) or '-'} | {m.get('category') or '-'} | {(m.get('summary') or '')[:220]}{' | STARRED' if m.get('star') else ''}")
     (DATA / "for-claude.txt").write_text("\n".join(t), encoding="utf-8")
 
 
@@ -1134,6 +1168,132 @@ def finish_post(item, url, post):
     update(item, status="done", step="finished", folder=folder, summary=summary)
 
 
+# ------------------------------------------------ YouTube fallbacks (v3.1)
+
+
+def parse_vtt(text):
+    """WebVTT captions to [(start_seconds, text)], without the repeats that automatic captions have."""
+    segs, prev, start, cur = [], set(), None, []
+
+    def flush():
+        nonlocal prev
+        if start is None:
+            return
+        lines = [l for l in cur if l]
+        new = [l for l in lines if l not in prev]
+        if new:
+            segs.append((start, " ".join(new)))
+        prev = set(lines)
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        m = re.match(r"(?:(\d+):)?(\d+):(\d+)[.,]\d+\s*-->", line)
+        if m:
+            flush()
+            start = int(m.group(1) or 0) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+            cur = []
+        elif start is None or not line or line.startswith(("WEBVTT", "Kind:", "Language:", "NOTE")):
+            if not line:
+                flush()
+                start, cur = None, []
+        elif re.fullmatch(r"\d+", line):
+            continue
+        else:
+            t = html.unescape(re.sub(r"<[^>]+>", "", line)).strip()
+            if t:
+                cur.append(t)
+    flush()
+    return segs
+
+
+def _yt_opts(workdir, use_cookies=True, **extra):
+    o = {"quiet": True, "noprogress": True, "no_warnings": True, "noplaylist": True, "retries": 3, "socket_timeout": 30,
+         "ignore_no_formats_error": True, "outtmpl": str(workdir / "video.%(ext)s")}
+    if use_cookies:
+        if COOKIES_FILE and Path(COOKIES_FILE).expanduser().exists():
+            o["cookiefile"] = str(Path(COOKIES_FILE).expanduser())
+        elif COOKIES_BROWSER:
+            o["cookiesfrombrowser"] = (COOKIES_BROWSER,)
+    o.update(extra)
+    return o
+
+
+def finish_transcript(item, url, info, folder, segs, lang, note):
+    """An item with a transcript but no video file (captions or audio only)."""
+    outdir = LIB / folder
+    outdir.mkdir(parents=True, exist_ok=True)
+    try:
+        plain = " ".join(t for _, t in segs)
+        (outdir / "transcript.txt").write_text("\n".join(f"[{mmss(s)}] {t}" for s, t in segs) or "(no speech detected)", encoding="utf-8")
+        (outdir / "plain.txt").write_text(plain, encoding="utf-8")
+        caption = (info.get("description") or "").strip()
+        title = (info.get("title") or "").strip()
+        update(item, step="writing summary")
+        summary = summarize(title, caption, plain)
+        update(item, step="matching your projects")
+        projs, by, cat = classify(title, caption, plain, [])
+        d = info.get("upload_date") or ""
+        meta = new_meta_common(folder, url, title, info.get("uploader") or info.get("channel") or "",
+                               f"{d[:4]}-{d[4:6]}-{d[6:8]}" if d else "", caption, summary, [],
+                               info.get("extractor_key", "Youtube"), "video")
+        meta.update(duration=info.get("duration") or 0, language=lang, frames=[], has_video=False, video_file="",
+                    video_unavailable=True, note=note, projects=projs, projects_by=by, category=cat, category_by=by)
+        (outdir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+        write_item_files(outdir, meta, plain)
+    except Exception:
+        shutil.rmtree(outdir, ignore_errors=True)
+        raise
+    rebuild_index()
+    update(item, status="done", step="finished", folder=folder, summary=summary)
+
+
+def process_youtube_fallback(item, url, workdir, why):
+    """YouTube would not give a video file. Get the captions; if there are none, listen to the audio."""
+    import yt_dlp
+
+    update(item, step="no video file from YouTube, trying the captions")
+    info, last = None, None
+    for cookies in (True, False):
+        try:
+            with yt_dlp.YoutubeDL(_yt_opts(workdir, cookies, skip_download=True, writesubtitles=True, writeautomaticsub=True,
+                                           subtitleslangs=["en.*", "ja.*", "zh.*"], subtitlesformat="vtt")) as ydl:
+                info = ydl.extract_info(url, download=True)
+            break
+        except Exception as e:
+            last = e
+    if info is None:
+        raise RuntimeError(f"YouTube would not even give the page information ({str(last)[:150]}).")
+    vid = safe(str(info.get("id", "x")), 24)
+    up = safe(info.get("uploader") or info.get("channel") or "", 24)
+    d = info.get("upload_date") or datetime.now().strftime("%Y%m%d")
+    folder = f"{d[:4]}-{d[4:6]}-{d[6:8]}_{up}_{vid}"
+    if (LIB / folder / "meta.json").exists():
+        update(item, status="done", step="already in library", folder=folder)
+        return
+    vtts = sorted(workdir.glob("video.*.vtt"), key=lambda p: (".en" not in p.name, p.name))
+    segs, lang, note = [], "", ""
+    if vtts:
+        segs = parse_vtt(vtts[0].read_text(encoding="utf-8", errors="replace"))
+        lang = vtts[0].name.split(".")[-2]
+        note = "Saved from YouTube's captions, because YouTube would not give a video file."
+    if not segs:
+        update(item, step="no captions, listening to the audio instead")
+        try:
+            with yt_dlp.YoutubeDL(_yt_opts(workdir, True, format="ba/b")) as ydl:
+                ydl.extract_info(url, download=True)
+            audio = [f for f in workdir.glob("video.*") if f.suffix.lower() in (".m4a", ".webm", ".mp4", ".opus", ".mp3", ".ogg", ".mka")]
+            if not audio:
+                raise RuntimeError("no audio file came back")
+            lang, segs, _dev = transcribe(max(audio, key=lambda p: p.stat().st_size), workdir)
+            note = "Transcribed from the audio only, because YouTube would not give a video file."
+        except Exception as e:
+            raise RuntimeError(
+                "YouTube gave no video, no captions and no audio. (" + str(why)[:80] + " / " + str(e)[:80] + ") Try: run update.sh "
+                "again (it updates the YouTube helper), install Node.js on the box (sudo apt install -y nodejs), or set up cookies "
+                "from a logged-in Firefox on the box.")
+    finish_transcript(item, url, info, folder, segs, lang, note)
+
+
 # ------------------------------------------- web pages and PDFs (v2.4)
 
 from html.parser import HTMLParser
@@ -1229,7 +1389,7 @@ def html_to_doc(raw, ctype_header=""):
 
 
 def fetch_url(url, maxbytes=DOC_MAX_BYTES):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.0",
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.1",
                                                "Accept": "text/html,application/pdf,*/*;q=0.8",
                                                "Accept-Language": "en,ja;q=0.8"})
     with urllib.request.urlopen(req, timeout=40) as r:
@@ -1662,6 +1822,11 @@ def process(item):
                     if NO_VIDEO.search(str(e)):
                         process_post(item, url, workdir, str(e))
                         return
+                    if platform_of(url) == "YouTube" and re.search(r"format is not available|no video formats|requested format|"
+                                                                   r"sign in to confirm|not a bot|nsig|signature", str(e), re.I):
+                        log("YouTube gave no video file, using captions or audio:", str(e)[:120])
+                        process_youtube_fallback(item, url, workdir, str(e))
+                        return
                     raise
                 if video is None:
                     update(item, status="done", step="already in library", folder=folder)
@@ -1952,6 +2117,7 @@ def night_scheduler():
                 night_review()
         except Exception as e:
             log("night scheduler:", e)
+        purge_trash()
         time.sleep(60)
 
 
@@ -2095,6 +2261,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name=
 <textarea id="urls" rows="5" placeholder="One or many links, any text around them is fine"></textarea>
 <p><label><input type="checkbox" id="keep" autocomplete="off" checked> Keep the video file (always on; untick it only for the links you add right now)</label></p>
 <p><button onclick="add()">Add to queue</button> <button class="sec" onclick="fetch('/api/resort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({big:true})}).then(function(r){return r.json()}).then(function(j){location='/night'+(j.error?'?e=1':'')})">Re-sort the files</button> <a href="/night">Which AI</a> &middot; <a href="/index.html">Full library</a> &middot; <a href="/projects.html">By project</a> &middot; <a href="/edit-projects">Edit projects</a> &middot; <a href="/import">Import files</a> &middot; <a href="/apply">Apply sorting</a> &middot; <a href="/index.txt">index.txt</a></p>
+<p><button class="sec" onclick="copyFrom('/for-claude.txt',this)">Copy library for Claude</button> <button class="sec" onclick="copyFrom('/starred.txt',this)">Copy starred for Claude</button> <a href="/index.html?starred=1">Starred items</a></p>
 <p id="msg" class="mut"></p>
 <p id="vids" class="note" style="display:none"></p>
 <h2>Queue</h2>
@@ -2191,7 +2358,7 @@ _miss_cache = {"t": 0, "n": 0}
 
 
 def missing_video_items():
-    return [m for m in all_metas() if m.get("kind") == "video" and not m.get("has_video") and m.get("url")]
+    return [m for m in all_metas() if m.get("kind") == "video" and not m.get("has_video") and not m.get("video_unavailable") and m.get("url")]
 
 
 def missing_video_count():
@@ -2286,6 +2453,59 @@ def api_fetch_video(folder):
     if vid_state["running"]:
         return jsonify(started=False, error="Another video fetch is running. Try again in a few minutes.")
     return jsonify(started=fetch_videos({folder}))
+
+
+TRASH = DATA / "trash"
+
+
+@app.post("/api/star/<folder>")
+def api_star(folder):
+    if not re.fullmatch(r"[\w\-]+", folder) or not (LIB / folder / "meta.json").exists():
+        abort(404)
+    on = bool((request.get_json(force=True, silent=True) or {}).get("star"))
+    meta = json.loads((LIB / folder / "meta.json").read_text(encoding="utf-8"))
+    meta["star"] = on
+    save_meta_and_pages(LIB / folder, meta)
+    rebuild_index()
+    return jsonify(ok=True, star=on)
+
+
+@app.post("/api/delete/<folder>")
+def api_delete(folder):
+    """Moves the item to the trash folder (recoverable for 30 days) and takes it out of the queue list."""
+    if not re.fullmatch(r"[\w\-]+", folder) or not (LIB / folder / "meta.json").exists():
+        abort(404)
+    TRASH.mkdir(parents=True, exist_ok=True)
+    dest = TRASH / folder
+    if dest.exists():
+        dest = TRASH / f"{folder}_{int(time.time())}"
+    try:
+        shutil.move(str(LIB / folder), str(dest))
+        os.utime(dest, None)
+    except Exception as e:
+        return jsonify(ok=False, error=f"Could not move it: {e}")
+    with lock:
+        items[:] = [i for i in items if i.get("folder") != folder]
+        save_state()
+    _miss_cache["t"] = 0
+    rebuild_index()
+    return jsonify(ok=True)
+
+
+def purge_trash(days=30):
+    try:
+        for d in TRASH.iterdir():
+            if time.time() - d.stat().st_mtime > days * 86400:
+                shutil.rmtree(d, ignore_errors=True)
+    except Exception:
+        pass
+
+
+@app.get("/starred.txt")
+def starred_txt():
+    if not (DATA / "starred.txt").exists():
+        rebuild_index()
+    return send_from_directory(DATA, "starred.txt", mimetype="text/plain; charset=utf-8")
 
 
 @app.post("/api/remove/<iid>")
@@ -2606,5 +2826,5 @@ if __name__ == "__main__":
     rebuild_index()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=night_scheduler, daemon=True).start()
-    log(f"reel2txt v3.0 on http://{HOST}:{PORT}  data={DATA}")
+    log(f"reel2txt v3.1 on http://{HOST}:{PORT}  data={DATA}")
     app.run(host=HOST, port=PORT, threaded=True)

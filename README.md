@@ -211,3 +211,9 @@ normal browser to clear the check, then retry.
 ## v3.0: read items on the right, and "how it could fit" ideas
 - **Side panel:** on the main page, the library and the by-project page, click any row (not just Open) and the item opens on the right: summary, projects, ideas, category, video and the "Copy for Claude" box. No going back and forth. On a narrow screen (phone) it opens the page as before.
 - **Night review ideas:** every night the big model also writes, for each link, how it could fit the 1 to 3 projects it helps most. It always forces a fit, even if it is a stretch, and gives an honest 1 to 5 score. They show on the item page, in "Copy for Claude", and under each project on `/projects.html` ("could also help"). Nothing is built or changed; it only tells you what it thinks.
+
+## v3.1: YouTube fallback, "talk about this later" star, real delete
+- **YouTube:** when YouTube refuses to give a video file ("Requested format is not available"), the app takes the captions instead (English, Japanese or Chinese). With no captions it listens to the audio with the speech model. Those items say so on their page and are not counted as "missing videos". `update.sh` also updates yt-dlp and checks for Node.js, which YouTube needs (`sudo apt install -y nodejs`).
+- **Star:** every item page has **Talk about this later**. `/index.html?starred=1` lists them, and **Copy starred for Claude** copies the full text of all starred items for a chat.
+- **Delete this item:** on the item page (and in the side panel). It asks first, then moves the item to `trash/` in the data folder. Trash is emptied after 30 days. The queue row goes too.
+- **Copy library for Claude** on the main page copies `for-claude.txt`. Starred items are marked STARRED in it.
