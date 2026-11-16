@@ -202,3 +202,8 @@ normal browser to clear the check, then retry.
 ## v2.8: pick the AI, and a "Re-sort the files" button
 - `/night` now starts with **Which AI to use**: a list of the models installed in Ollama for the fast model (every new link) and the big model (night review and re-sort). You can also type a name to download one. It saves to `settings.json` in the data folder, takes effect immediately, and wins over `config.env`.
 - **Re-sort the files** (main page and `/night`): reads every item again with the big model (or the fast model) and sorts it. Hand-sorted items are left alone. New links go first, and the model is unloaded when it finishes.
+
+## v2.9: clearer buttons, saved video setting, fetch missing videos
+- Queue rows now have separate **Open** and **Remove** buttons. Remove asks first and only removes the row; the saved item stays in the library.
+- "Keep the video file" is remembered on the box (`settings.json`), so a stuck browser checkbox can no longer turn saving off.
+- Items saved without a video show **Save the video now**. The main page also has **Fetch the missing videos** for all of them (it runs in the background, waits for new links, and uses your login cookies when needed).

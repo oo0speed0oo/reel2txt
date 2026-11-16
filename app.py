@@ -49,6 +49,7 @@ WHISPER_MODEL = env("R2T_WHISPER_MODEL", "small")
 WHISPER_DEVICE = env("R2T_DEVICE", "auto")  # auto | cuda | cpu
 OLLAMA_URL = env("R2T_OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = env("R2T_OLLAMA_MODEL", "")  # empty = pick smallest installed
+KEEP_VIDEO = True  # the "Keep the video file" choice, remembered in settings.json
 NIGHT_MODEL = env("R2T_NIGHT_MODEL", "")  # a bigger model for the nightly review. Empty = off
 NIGHT_HOUR = int(env("R2T_NIGHT_HOUR", "0"))  # local hour the review starts (0 = midnight)
 NIGHT_MAX_HOURS = float(env("R2T_NIGHT_MAX_HOURS", "6"))  # stop after this long; the rest waits for the next night
@@ -59,7 +60,7 @@ MIN_FREE_GB = float(env("R2T_MIN_FREE_GB", "5"))
 PAUSE_BETWEEN = float(env("R2T_PAUSE", "6"))
 BLOCK_TRANSCRIPT_CHARS = int(env("R2T_BLOCK_CHARS", "12000"))
 ALLOW_THIRD_PARTY = env("R2T_ALLOW_THIRD_PARTY", "0") == "1"  # fxtwitter.com fallback for X posts
-UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/2.8"
+UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/2.9"
 IMPORT_ROOT = Path(env("R2T_IMPORT_ROOT", str(Path.home()))).expanduser().resolve()  # import only from inside this
 DEFAULT_IMPORT = env("R2T_IMPORT_DIR", "~/Downloads")
 SECRETS_FILE = Path(env("R2T_SECRETS", "~/.reel2txt-secrets")).expanduser()  # IG_USER= / IG_PASS= lines, chmod 600
@@ -326,7 +327,7 @@ def classify(title, caption, plain, ocr, model=None):
 # ------------------------------------------------------------- video path
 
 
-def download(url, workdir, use_cookies=True):
+def download(url, workdir, use_cookies=True, force=False):
     import yt_dlp
 
     opts = {
@@ -350,7 +351,7 @@ def download(url, workdir, use_cookies=True):
         uploader = safe(info.get("uploader") or info.get("channel") or "", 24)
         d = info.get("upload_date") or datetime.now().strftime("%Y%m%d")
         folder = f"{d[:4]}-{d[4:6]}-{d[6:8]}_{uploader}_{vid}"
-        if (LIB / folder / "meta.json").exists():
+        if (LIB / folder / "meta.json").exists() and not force:
             return info, folder, None
         if free_gb() < MIN_FREE_GB:
             raise RuntimeError(f"Low disk space ({free_gb():.1f} GB free, need {MIN_FREE_GB}).")
@@ -766,6 +767,11 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px 6px;
 .frames.big img{height:auto;max-width:100%;max-height:420px}
 pre{white-space:pre-wrap;background:var(--card);padding:12px;border-radius:8px;border:1px solid var(--line);overflow-wrap:anywhere}
 video{max-width:100%;border-radius:8px}
+.acts{display:flex;gap:12px;align-items:center;justify-content:flex-end;flex-wrap:wrap;min-width:150px}
+a.btn,button.danger{display:inline-block;border-radius:8px;padding:8px 16px;font:inherit;text-decoration:none;cursor:pointer;white-space:nowrap}
+a.btn{background:var(--acc);color:#fff;border:0}
+button.danger{background:transparent;color:#d33a2f;border:1px solid #d33a2f}
+.note{border-left:4px solid #e0a500;background:var(--card);padding:8px 12px;border-radius:6px;margin:10px 0}
 </style>"""
 
 
@@ -859,7 +865,10 @@ def write_item_files(outdir, meta, plain):
     else:
         imgs = "".join(f'<a href="frames/{quote(f)}"><img src="frames/{quote(f)}" loading="lazy"></a>' for f in meta.get("frames", []))
         vid = (f'<video controls preload="metadata" src="{quote(meta["video_file"])}"></video>' if meta.get("has_video") else
-               '<p class="mut">Video was not kept for this one.</p>')
+               '<div class="note">No video file is saved for this one. <button class="sec" id="gv" onclick="getVid()">Save the video now</button> <span id="gvm" class="mut"></span></div>'
+               '<script>function getVid(){document.getElementById("gvm").textContent="Working... (a minute or two)";'
+               'fetch("/api/fetch-video/' + quote(meta["folder"]) + '",{method:"POST"}).then(function(r){return r.json()}).then(function(j){'
+               'document.getElementById("gvm").textContent=j.started?"Started. Reload this page in a minute.":(j.error||"Could not start.")})}</script>')
         media = f'<h2>Frames</h2><div class="frames">{imgs or "<span class=mut>none</span>"}</div><h2>Video</h2>{vid}'
     sub = (f'{e(meta.get("uploader", ""))} &middot; {e(meta.get("date", ""))} &middot; ' +
            (f'{meta.get("pages") or ""} {"pages" if meta.get("pages") else "web page"}' if doc else
@@ -1176,7 +1185,7 @@ def html_to_doc(raw, ctype_header=""):
 
 
 def fetch_url(url, maxbytes=DOC_MAX_BYTES):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/2.8",
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/2.9",
                                                "Accept": "text/html,application/pdf,*/*;q=0.8",
                                                "Accept-Language": "en,ja;q=0.8"})
     with urllib.request.urlopen(req, timeout=40) as r:
@@ -1715,11 +1724,13 @@ SETTINGS_FILE = DATA / "settings.json"
 
 def load_settings():
     """Models chosen on the /night page. They win over config.env and apply without a restart."""
-    global OLLAMA_MODEL, NIGHT_MODEL, _omodel
+    global OLLAMA_MODEL, NIGHT_MODEL, _omodel, KEEP_VIDEO
     try:
         d = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
     except Exception:
         return
+    if "keep" in d:
+        KEEP_VIDEO = bool(d["keep"])
     if "fast" in d:
         OLLAMA_MODEL, _omodel = d["fast"], None
     if "night" in d:
@@ -2001,9 +2012,10 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name=
 <h1>reel2txt</h1>
 <p class="mut">Paste links (TikTok, Instagram, YouTube, X, web pages, PDF links...). Videos, text posts, image posts, articles and PDFs all work. The box reads them, files them in the library and says which of your projects they could help.</p>
 <textarea id="urls" rows="5" placeholder="One or many links, any text around them is fine"></textarea>
-<p><label><input type="checkbox" id="keep" checked> Keep the video file</label></p>
+<p><label><input type="checkbox" id="keep" autocomplete="off" checked onchange="setKeep()"> Keep the video file (remembered for every visit)</label></p>
 <p><button onclick="add()">Add to queue</button> <button class="sec" onclick="fetch('/api/resort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({big:true})}).then(function(r){return r.json()}).then(function(j){location='/night'+(j.error?'?e=1':'')})">Re-sort the files</button> <a href="/night">Which AI</a> &middot; <a href="/index.html">Full library</a> &middot; <a href="/projects.html">By project</a> &middot; <a href="/edit-projects">Edit projects</a> &middot; <a href="/import">Import files</a> &middot; <a href="/apply">Apply sorting</a> &middot; <a href="/index.txt">index.txt</a></p>
 <p id="msg" class="mut"></p>
+<p id="vids" class="note" style="display:none"></p>
 <h2>Queue</h2>
 <table><tbody id="rows"></tbody></table>
 <p class="mut" id="status"></p>
@@ -2016,17 +2028,25 @@ function add(){
     document.getElementById('msg').textContent=j.added+' added'+(j.skipped?(', '+j.skipped+' already in the list'):'');
     document.getElementById('urls').value='';load()})}
 function act(p){fetch(p,{method:'POST'}).then(load)}
+function del(id){if(confirm('Remove this from the list?\\n\\nThe saved item stays in your library. Only this row is removed.')){act('/api/remove/'+id)}}
+var keepInit=false;
+function setKeep(){fetch('/api/keep',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keep:document.getElementById('keep').checked})})}
+function getVideos(){fetch('/api/fetch-missing',{method:'POST'}).then(function(r){return r.json()}).then(function(j){document.getElementById('msg').textContent=j.started?'Fetching the missing videos in the background.':'Already running, or nothing to fetch.';load()})}
 function load(){
   fetch('/api/items').then(function(r){return r.json()}).then(function(j){
     var h='';j.items.slice().reverse().forEach(function(it){
       var right='';
-      if(it.status==='done'&&it.folder){right='<a href="/library/'+encodeURIComponent(it.folder)+'/index.html">open</a>'}
+      if(it.status==='done'&&it.folder){right='<a class="btn" href="/library/'+encodeURIComponent(it.folder)+'/index.html">Open</a>'}
       if(it.status==='error'){right='<button class="sec" onclick="act(\\'/api/retry/'+it.id+'\\')">Retry</button>'}
-      if(it.status!=='running'){right+=' <button class="sec" onclick="act(\\'/api/remove/'+it.id+'\\')">x</button>'}
+      if(it.status!=='running'){right+='<button class="danger" onclick="del(\\''+it.id+'\\')">Remove</button>'}
+      right='<div class="acts">'+right+'</div>';
       h+='<tr><td><span class="tag">'+esc(it.status)+'</span></td><td>'+esc(it.url.slice(0,70))+
          '<div class="mut">'+esc(it.status==='error'?it.error:(it.summary||it.step))+'</div></td><td>'+right+'</td></tr>'});
     document.getElementById('rows').innerHTML=h||'<tr><td class="mut">Nothing yet</td></tr>';
-    var s=j.status;document.getElementById('status').textContent='Free disk: '+s.free_gb+' GB | speech model: '+s.whisper+
+    var s=j.status;
+    if(!keepInit){document.getElementById('keep').checked=!!s.keep;keepInit=true}
+    document.getElementById('vids').style.display=s.missing_videos?'block':'none';document.getElementById('vids').innerHTML=s.missing_videos?('<b>'+s.missing_videos+'</b> saved videos have no video file. <button class="sec" onclick="getVideos()">Fetch the missing videos</button> '+(s.fetching?esc(s.fetching):'')):'';
+    document.getElementById('status').textContent='Free disk: '+s.free_gb+' GB | speech model: '+s.whisper+
       ' | login cookies: '+s.cookies+' | summaries: '+s.summaries+' | projects loaded: '+s.projects+' | Instagram: '+s.instagram})}
 load();setInterval(load,3000);
 </script></main></body></html>""".replace("%CSS%", CSS)
@@ -2049,7 +2069,7 @@ def api_add():
                 skipped += 1
                 continue
             items.append({"id": f"{int(time.time() * 1000)}{added}", "url": u, "status": "queued", "step": "waiting",
-                          "keep_video": bool(data.get("keep_video", True)),
+                          "keep_video": bool(data.get("keep_video", KEEP_VIDEO)),
                           "added": datetime.now().isoformat(timespec="seconds")})
             added += 1
         save_state()
@@ -2067,6 +2087,8 @@ def api_items():
         "cookies": (COOKIES_BROWSER or ("file" if COOKIES_FILE else "off")),
         "summaries": OLLAMA_MODEL or "auto (smallest Ollama model)",
         "night": f"{NIGHT_MODEL} at {NIGHT_HOUR}:00" if NIGHT_MODEL else "off",
+        "keep": KEEP_VIDEO, "missing_videos": missing_video_count(),
+        "fetching": (f"fetching {vid_state['done']} of {vid_state['total']} ({vid_state['ok']} ok, {vid_state['fail']} failed)" if vid_state["running"] else ""),
         "projects": len(load_projects()), "instagram": ig_status()})
 
 
@@ -2079,6 +2101,108 @@ def api_retry(iid):
         save_state()
     wake.set()
     return jsonify(ok=True)
+
+
+vid_state = {"running": False, "done": 0, "total": 0, "ok": 0, "fail": 0, "last": ""}
+_miss_cache = {"t": 0, "n": 0}
+
+
+def missing_video_items():
+    return [m for m in all_metas() if m.get("kind") == "video" and not m.get("has_video") and m.get("url")]
+
+
+def missing_video_count():
+    if time.time() - _miss_cache["t"] > 30:
+        _miss_cache.update(t=time.time(), n=len(missing_video_items()))
+    return _miss_cache["n"]
+
+
+def fetch_video_for(m):
+    """Gets the video file for an item that was saved without one, and puts it in its folder."""
+    outdir = LIB / m["folder"]
+    url = m["url"]
+    src = Path(url[7:] if url.startswith("file://") else url)
+    if (url.startswith("file://") or url.startswith("/")) and src.exists():
+        dest = outdir / f"video{src.suffix}"
+        shutil.copy2(str(src), str(dest))
+    else:
+        if free_gb() < MIN_FREE_GB:
+            raise RuntimeError(f"Low disk space ({free_gb():.1f} GB free).")
+        work = WORK / ("v" + re.sub(r"\W", "", m["folder"])[-24:])
+        shutil.rmtree(work, ignore_errors=True)
+        work.mkdir(parents=True)
+        try:
+            try:
+                info, _f, video = download(url, work, use_cookies=True, force=True)
+            except Exception:
+                info, _f, video = download(url, work, use_cookies=False, force=True)
+            if not video:
+                raise RuntimeError("the downloader found no video")
+            dest = outdir / f"video{video.suffix}"
+            shutil.move(str(video), str(dest))
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+    m["has_video"], m["video_file"] = True, dest.name
+    save_meta_and_pages(outdir, m)
+
+
+def fetch_videos(folders=None):
+    with lock:
+        if vid_state["running"]:
+            return False
+        vid_state.update(running=True, done=0, total=0, ok=0, fail=0, last="")
+
+    def job():
+        try:
+            todo = [m for m in missing_video_items() if folders is None or m["folder"] in folders]
+            vid_state["total"] = len(todo)
+            for m in todo:
+                while _queue_busy():
+                    time.sleep(15)
+                try:
+                    fetch_video_for(m)
+                    vid_state["ok"] += 1
+                except Exception as e:
+                    vid_state["fail"] += 1
+                    vid_state["last"] = f"{m.get('title', m['folder'])[:40]}: {str(e)[:100]}"
+                    log("video fetch failed for", m["folder"], e)
+                vid_state["done"] += 1
+            _miss_cache["t"] = 0
+            rebuild_index()
+        finally:
+            vid_state["running"] = False
+
+    threading.Thread(target=job, daemon=True).start()
+    return True
+
+
+@app.post("/api/keep")
+def api_keep():
+    global KEEP_VIDEO
+    d = request.get_json(force=True, silent=True) or {}
+    KEEP_VIDEO = bool(d.get("keep", True))
+    cur = {}
+    try:
+        cur = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    cur["keep"] = KEEP_VIDEO
+    SETTINGS_FILE.write_text(json.dumps(cur, indent=1), encoding="utf-8")
+    return jsonify(ok=True, keep=KEEP_VIDEO)
+
+
+@app.post("/api/fetch-missing")
+def api_fetch_missing():
+    return jsonify(started=missing_video_count() > 0 and fetch_videos())
+
+
+@app.post("/api/fetch-video/<folder>")
+def api_fetch_video(folder):
+    if not re.fullmatch(r"[\w\-]+", folder) or not (LIB / folder / "meta.json").exists():
+        abort(404)
+    if vid_state["running"]:
+        return jsonify(started=False, error="Another video fetch is running. Try again in a few minutes.")
+    return jsonify(started=fetch_videos({folder}))
 
 
 @app.post("/api/remove/<iid>")
@@ -2399,5 +2523,5 @@ if __name__ == "__main__":
     rebuild_index()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=night_scheduler, daemon=True).start()
-    log(f"reel2txt v2.8 on http://{HOST}:{PORT}  data={DATA}")
+    log(f"reel2txt v2.9 on http://{HOST}:{PORT}  data={DATA}")
     app.run(host=HOST, port=PORT, threaded=True)
