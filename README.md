@@ -207,3 +207,7 @@ normal browser to clear the check, then retry.
 - Queue rows now have separate **Open** and **Remove** buttons. Remove asks first and only removes the row; the saved item stays in the library.
 - "Keep the video file" is remembered on the box (`settings.json`), so a stuck browser checkbox can no longer turn saving off.
 - Items saved without a video show **Save the video now**. The main page also has **Fetch the missing videos** for all of them (it runs in the background, waits for new links, and uses your login cookies when needed).
+
+## v3.0: read items on the right, and "how it could fit" ideas
+- **Side panel:** on the main page, the library and the by-project page, click any row (not just Open) and the item opens on the right: summary, projects, ideas, category, video and the "Copy for Claude" box. No going back and forth. On a narrow screen (phone) it opens the page as before.
+- **Night review ideas:** every night the big model also writes, for each link, how it could fit the 1 to 3 projects it helps most. It always forces a fit, even if it is a stretch, and gives an honest 1 to 5 score. They show on the item page, in "Copy for Claude", and under each project on `/projects.html` ("could also help"). Nothing is built or changed; it only tells you what it thinks.

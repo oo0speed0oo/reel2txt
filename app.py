@@ -60,7 +60,7 @@ MIN_FREE_GB = float(env("R2T_MIN_FREE_GB", "5"))
 PAUSE_BETWEEN = float(env("R2T_PAUSE", "6"))
 BLOCK_TRANSCRIPT_CHARS = int(env("R2T_BLOCK_CHARS", "12000"))
 ALLOW_THIRD_PARTY = env("R2T_ALLOW_THIRD_PARTY", "0") == "1"  # fxtwitter.com fallback for X posts
-UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/2.9"
+UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.0"
 IMPORT_ROOT = Path(env("R2T_IMPORT_ROOT", str(Path.home()))).expanduser().resolve()  # import only from inside this
 DEFAULT_IMPORT = env("R2T_IMPORT_DIR", "~/Downloads")
 SECRETS_FILE = Path(env("R2T_SECRETS", "~/.reel2txt-secrets")).expanduser()  # IG_USER= / IG_PASS= lines, chmod 600
@@ -739,6 +739,20 @@ def convert_images(files, outdir):
 
 # ----------------------------------------------------------- page output
 
+SPLIT_JS = r"""<script>
+(function(){var wide=window.matchMedia('(min-width:1000px)');
+function pick(folder,tr){var pane=document.getElementById('pane');if(!pane)return false;
+ if(!wide.matches){location='/library/'+encodeURIComponent(folder)+'/index.html';return true}
+ pane.innerHTML='<iframe src="/library/'+encodeURIComponent(folder)+'/index.html"></iframe>';
+ window.selFolder=folder;document.querySelectorAll('tr.sel').forEach(function(r){r.classList.remove('sel')});if(tr)tr.classList.add('sel');return true}
+window.pickItem=pick;
+document.addEventListener('click',function(ev){var tr=ev.target.closest('tr[data-folder]');if(!tr)return;
+ var a=ev.target.closest('a');if(ev.target.closest('button,input,select,textarea'))return;
+ if(a&&!(a.getAttribute('href')||'').match(/\/library\/.*index\.html$|^library\/.*index\.html$/))return;
+ if(ev.metaKey||ev.ctrlKey||ev.shiftKey)return;
+ ev.preventDefault();pick(tr.dataset.folder,tr)})})();
+</script>"""
+
 COPY_JS = """<script>
 function copyText(id,btn){var t=document.getElementById(id).value;
 function done(){var o=btn.dataset.o||btn.textContent;btn.dataset.o=o;btn.textContent='Copied';setTimeout(function(){btn.textContent=o},1500)}
@@ -771,6 +785,16 @@ video{max-width:100%;border-radius:8px}
 a.btn,button.danger{display:inline-block;border-radius:8px;padding:8px 16px;font:inherit;text-decoration:none;cursor:pointer;white-space:nowrap}
 a.btn{background:var(--acc);color:#fff;border:0}
 button.danger{background:transparent;color:#d33a2f;border:1px solid #d33a2f}
+.pane{display:none}
+@media(min-width:1000px){
+main.wide{max-width:none;padding-left:20px;padding-right:20px}
+.split{display:grid;grid-template-columns:minmax(420px,1fr) minmax(480px,1.15fr);gap:22px;align-items:start}
+.pane{display:block;position:sticky;top:10px;height:calc(100vh - 24px);border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--card)}
+.pane iframe{width:100%;height:100%;border:0;background:var(--bg)}
+.pane .empty{padding:28px;color:var(--mut)}
+tr[data-folder]{cursor:pointer}tr[data-folder]:hover{background:var(--card)}
+tr.sel{background:var(--card);box-shadow:inset 4px 0 0 var(--acc)}
+.split .xs{display:none}}
 .note{border-left:4px solid #e0a500;background:var(--card);padding:8px 12px;border-radius:6px;margin:10px 0}
 </style>"""
 
@@ -787,6 +811,15 @@ def read_plain(outdir):
 
 
 def build_block(meta, plain):
+    block = _build_block(meta, plain)
+    fit = meta.get("fit") or []
+    if fit:
+        block += "\n\n## How it could fit the projects (night review; forced fit, score 1 = a stretch, 5 = direct)\n" + "\n".join(
+            f"- {f.get('project')} (fit {f.get('score')}/5): {f.get('idea')}" for f in fit)
+    return block
+
+
+def _build_block(meta, plain):
     kind = meta.get("kind")
     post = kind == "post"
     doc = kind == "doc"
@@ -876,18 +909,24 @@ def write_item_files(outdir, meta, plain):
     files = ('<a href="summary.md">summary.md</a> &middot; <a href="meta.json">meta.json</a>' +
              (' &middot; <a href="text.txt">text.txt</a>' + (' &middot; <a href="original.pdf">original.pdf</a>' if meta.get("doc_file") else '')
               if doc else '' if post else ' &middot; <a href="transcript.txt">transcript.txt</a>'))
+    fit = meta.get("fit") or []
+    fithtml = ""
+    if fit:
+        fithtml = ('<h2>How it could fit your projects</h2><p class="mut">The night review forced a fit for each of these, even where it is a stretch. '
+                   'The number is how good a fit it thinks it is (1 = a stretch, 5 = directly useful).</p>' +
+                   "".join(f'<div class="use"><b>{e(f.get("project", ""))}</b> <span class="tag">fit {int(f.get("score", 0))}/5</span><br>{e(f.get("idea", ""))}</div>' for f in fit))
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{e(meta.get('title') or meta['folder'])}</title>{CSS}</head><body><main>
-<p><a href="../../index.html">&larr; Full library</a> &middot; <a href="../../projects.html">By project</a></p>
+<p id="nav"><a href="../../index.html">&larr; Full library</a> &middot; <a href="../../projects.html">By project</a></p>
 <h1>{e(meta.get('title') or meta['folder'])}</h1>
 <p class="mut">{sub} &middot; {('<a href="' + e(meta['url']) + '">original link</a>') if str(meta['url']).startswith('http') else ('file: ' + e(meta['url']))}</p>
 <p>{e(meta.get('summary', ''))}</p>
-{use}{form}
+{use}{fithtml}{form}
 <p><button onclick="copyText('blk',this)">Copy for Claude</button></p>
 <textarea id="blk" readonly rows="10">{e(block)}</textarea>
 {media}
 <h2>Files</h2><p>{files}</p>
-</main>{COPY_JS}</body></html>"""
+</main>{COPY_JS}<script>if(window.top!==window){{var n=document.getElementById('nav');if(n)n.style.display='none'}}</script></body></html>"""
     (outdir / "index.html").write_text(page, encoding="utf-8")
 
 
@@ -915,26 +954,28 @@ def rebuild_index():
         f = quote(m["folder"])
         chips = "".join(f'<span class="tag">{e(p["name"])}</span>' for p in ps) or '<span class="mut">No project</span>'
         rows.append(
-            f'<tr data-t="{e((m["folder"] + " " + m.get("summary", "") + " " + m.get("uploader", "") + " " + " ".join(p["name"] for p in ps) + " " + m.get("category", "")).lower())}">'
+            f'<tr data-folder="{e(m["folder"])}" data-t="{e((m["folder"] + " " + m.get("summary", "") + " " + m.get("uploader", "") + " " + " ".join(p["name"] for p in ps) + " " + m.get("category", "")).lower())}">'
             f'<td>{e(m.get("added", "")[:10])}</td>'
             f'<td><a href="library/{f}/index.html">{e(m["folder"])}</a></td>'
-            f'<td>{e(m.get("platform", ""))} {kind}</td><td>{e(m.get("summary", ""))}</td><td>{chips}</td><td class="mut">{e(m.get("category", ""))}</td>'
-            f'<td><a href="library/{f}/summary.md">summary</a></td></tr>')
+            f'<td class="xs">{e(m.get("platform", ""))} {kind}</td><td>{e(m.get("summary", ""))}</td><td>{chips}</td><td class="mut xs">{e(m.get("category", ""))}</td>'
+            f'<td class="xs"><a href="library/{f}/summary.md">summary</a></td></tr>')
     (DATA / "index.txt").write_text("\n".join(txt), encoding="utf-8")
     nav = '<p><a href="/">&larr; Add links</a> &middot; <a href="projects.html">By project</a> &middot; <a href="index.txt">index.txt</a></p>'
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>reel2txt library</title>{CSS}</head><body><main>{nav}
+<title>reel2txt library</title>{CSS}</head><body><main class="wide"><div class="split"><div class="left">{nav}
 <h1>Library ({len(metas)})</h1>
 <input type="search" id="q" placeholder="Search folder, summary, uploader, project" oninput="f()">
-<table><tr><th>Added</th><th>Folder</th><th>Source</th><th>What it is</th><th>Use in</th><th>Category</th><th>Files</th></tr>{''.join(rows)}</table>
+<p class="mut">Click any row to read it on the right.</p>
+<table><tr><th>Added</th><th>Folder</th><th class="xs">Source</th><th>What it is</th><th>Use in</th><th class="xs">Category</th><th class="xs">Files</th></tr>{''.join(rows)}</table>
+</div><aside class="pane" id="pane"><div class="empty">Click an item on the left and it opens here.</div></aside></div>
 <script>function f(){{var q=document.getElementById('q').value.toLowerCase();
 document.querySelectorAll('tr[data-t]').forEach(function(r){{r.style.display=r.dataset.t.indexOf(q)<0?'none':''}})}}</script>
-</main></body></html>"""
+{SPLIT_JS}</main></body></html>"""
     (DATA / "index.html").write_text(page, encoding="utf-8")
 
     # by-project page: projects first, then everything with no project, by category
     def rowhtml(m, why=""):
-        return (f'<tr><td>{e(m.get("added", "")[:10])}</td>'
+        return (f'<tr data-folder="{e(m["folder"])}"><td>{e(m.get("added", "")[:10])}</td>'
                 f'<td><a href="library/{quote(m["folder"])}/index.html">{e(m.get("title") or m["folder"])}</a>'
                 f'<div class="mut">{e(m.get("summary", ""))}</div></td><td class="mut">{e(why)}</td></tr>')
 
@@ -943,6 +984,9 @@ document.querySelectorAll('tr[data-t]').forEach(function(r){{r.style.display=r.d
     for p in projs:
         its = [m for m in metas if any(x["name"] == p["name"] for x in (m.get("projects") or []))]
         li = "".join(rowhtml(m, next((x.get("why", "") for x in m["projects"] if x["name"] == p["name"]), "")) for m in its)
+        extra = [m for m in metas if m not in its and any(f.get("project") == p["name"] and f.get("score", 0) >= 3 for f in (m.get("fit") or []))]
+        li += ("<tr><td colspan=3 class=mut><b>Night review: could also help</b></td></tr>" + "".join(
+            rowhtml(m, next((f["idea"][:160] for f in m["fit"] if f.get("project") == p["name"]), "")) for m in extra)) if extra else ""
         sug = ' <span class="mut">(suggested)</span>' if p.get("status", "").lower().startswith("suggest") else ""
         body.append(f'<h2>{e(p["name"])}{sug} <span class="tag">{len(its)}</span></h2><p class="mut">{e(p["what"])}</p>' +
                     (f"<table>{li}</table>" if li else '<p class="mut">Nothing yet.</p>'))
@@ -959,10 +1003,10 @@ document.querySelectorAll('tr[data-t]').forEach(function(r){{r.style.display=r.d
     if odd:
         body.append(f'<h2>Other categories <span class="tag">{len(odd)}</span></h2><table>' + "".join(rowhtml(m) for m in odd) + "</table>")
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>reel2txt by project</title>{CSS}</head><body><main>
+<title>reel2txt by project</title>{CSS}</head><body><main class="wide"><div class="split"><div class="left">
 <p><a href="/">&larr; Add links</a> &middot; <a href="index.html">Full library</a> &middot; <a href="/edit-projects">Edit projects</a> &middot; <a href="/edit-categories">Edit categories</a> &middot; <a href="/apply">Apply a sorting file</a></p>
 <h1>By project</h1><p class="mut">A link can appear under two projects. Items that help no project are listed further down by category. Open an item to change where it belongs.</p>
-{''.join(body)}</main></body></html>"""
+{''.join(body)}</div><aside class="pane" id="pane"><div class="empty">Click an item on the left and it opens here.</div></aside></div>{SPLIT_JS}</main></body></html>"""
     (DATA / "projects.html").write_text(page, encoding="utf-8")
     write_for_claude(metas, projs)
 
@@ -1185,7 +1229,7 @@ def html_to_doc(raw, ctype_header=""):
 
 
 def fetch_url(url, maxbytes=DOC_MAX_BYTES):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/2.9",
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.0",
                                                "Accept": "text/html,application/pdf,*/*;q=0.8",
                                                "Accept-Language": "en,ja;q=0.8"})
     with urllib.request.urlopen(req, timeout=40) as r:
@@ -1740,6 +1784,39 @@ NIGHT_FILE = DATA / "night.json"
 night_state = {"running": False, "done": 0, "total": 0, "step": "", "error": "", "started": "", "stop": False}
 
 
+def fit_ideas(m, plain, model):
+    """Forced fit: for the 1 to 3 projects it could help most, even as a stretch, how would the idea be used? Honest 1-5 score."""
+    projs = load_projects()
+    if not projs:
+        return []
+    listing = "\n".join(f"- {p['name']}: {p['what'][:220]}" for p in projs)
+    material = (f"Title: {m.get('title', '')}\nSummary: {m.get('summary', '')}\nCaption/post text: {(m.get('caption') or '')[:1200]}\n"
+                f"Content: {(plain or '')[:5000]}")
+    prompt = ("You help the owner of these projects decide what to do with a link he saved.\n\nHis projects:\n" + listing +
+              "\n\nSaved item:\n" + material +
+              "\n\nPick the 1 to 3 projects this item could help most. ALWAYS give at least one, even when it is a stretch: force a fit "
+              "and say concretely how it could be used there, in two plain sentences (a feature, a lesson, a test, a script idea). "
+              "Be honest in the score: 1 = a stretch, 3 = useful idea, 5 = directly useful now. Use only what the item actually says. "
+              'Reply with JSON only: {"ideas":[{"project":"<exact project name>","idea":"<two sentences>","score":3}]}')
+    body = json.dumps({"model": model, "stream": False, "format": "json", "keep_alive": "10m",
+                       "options": {"num_ctx": 8192, "temperature": 0.3}, "prompt": prompt}).encode()
+    req = urllib.request.Request(OLLAMA_URL + "/api/generate", body, {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=1500) as r:
+        data = json.loads(json.load(r).get("response", "{}"))
+    out = []
+    for it in data.get("ideas", [])[:3]:
+        n = match_name(it.get("project"), projs)
+        if n and n not in [o["project"] for o in out]:
+            try:
+                sc = max(1, min(5, int(it.get("score", 3))))
+            except Exception:
+                sc = 3
+            out.append({"project": n, "idea": str(it.get("idea", ""))[:500], "score": sc})
+    if not out:
+        raise RuntimeError("no usable ideas in the answer")
+    return out
+
+
 def _night_load():
     try:
         return json.loads(NIGHT_FILE.read_text(encoding="utf-8"))
@@ -1807,7 +1884,7 @@ def night_review(force=False):
         result = ""
         try:
             ensure_night_model()
-            todo = [m for m in all_metas() if force or m.get("reviewed_by") != NIGHT_MODEL]
+            todo = [m for m in all_metas() if force or m.get("reviewed_by") != NIGHT_MODEL or m.get("fit_by") != NIGHT_MODEL]
             todo.sort(key=lambda m: m.get("added", ""), reverse=True)  # newest first
             night_state["total"] = len(todo)
             for m in todo:
@@ -1823,17 +1900,22 @@ def night_review(force=False):
                 outdir = LIB / m["folder"]
                 try:
                     plain = read_plain(outdir)
-                    m["summary"] = summarize(m.get("title", ""), m.get("caption", ""), plain or "", model=NIGHT_MODEL)
-                    projs, by, cat = classify(m.get("title", ""), m.get("caption", ""), plain, m.get("ocr", []), model=NIGHT_MODEL)
-                    if m.get("projects_by") not in HAND:
-                        if [p["name"] for p in m.get("projects") or []] != [p["name"] for p in projs]:
-                            redo += 1
-                        m["projects"], m["projects_by"] = projs, by
-                    if m.get("category_by") not in HAND:
-                        m["category"], m["category_by"] = cat, by
-                    m["reviewed_by"] = NIGHT_MODEL
-                    m["reviewed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    save_meta_and_pages(outdir, m)
+                    if force or m.get("reviewed_by") != NIGHT_MODEL:
+                        m["summary"] = summarize(m.get("title", ""), m.get("caption", ""), plain or "", model=NIGHT_MODEL)
+                        projs, by, cat = classify(m.get("title", ""), m.get("caption", ""), plain, m.get("ocr", []), model=NIGHT_MODEL)
+                        if m.get("projects_by") not in HAND:
+                            if [p["name"] for p in m.get("projects") or []] != [p["name"] for p in projs]:
+                                redo += 1
+                            m["projects"], m["projects_by"] = projs, by
+                        if m.get("category_by") not in HAND:
+                            m["category"], m["category_by"] = cat, by
+                        m["reviewed_by"] = NIGHT_MODEL
+                        m["reviewed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        save_meta_and_pages(outdir, m)
+                    if force or m.get("fit_by") != NIGHT_MODEL:
+                        night_state["step"] = f"thinking about how it fits: {(m.get('title') or m['folder'])[:40]}"
+                        m["fit"], m["fit_by"] = fit_ideas(m, plain, NIGHT_MODEL), NIGHT_MODEL
+                        save_meta_and_pages(outdir, m)
                     fails = 0
                 except Exception as e:
                     fails += 1
@@ -2007,7 +2089,7 @@ def auth():
 
 
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>reel2txt</title>%CSS%</head><body><main>
+<title>reel2txt</title>%CSS%</head><body><main class="wide"><div class="split"><div class="left">
 <h1>reel2txt</h1>
 <p class="mut">Paste links (TikTok, Instagram, YouTube, X, web pages, PDF links...). Videos, text posts, image posts, articles and PDFs all work. The box reads them, files them in the library and says which of your projects they could help.</p>
 <textarea id="urls" rows="5" placeholder="One or many links, any text around them is fine"></textarea>
@@ -2016,8 +2098,10 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name=
 <p id="msg" class="mut"></p>
 <p id="vids" class="note" style="display:none"></p>
 <h2>Queue</h2>
+<p class="mut">Click any finished row to read it on the right.</p>
 <table><tbody id="rows"></tbody></table>
 <p class="mut" id="status"></p>
+</div><aside class="pane" id="pane"><div class="empty">Click a finished item on the left and it opens here, with its summary, projects, ideas and the video.</div></aside></div>
 <script>
 function esc(s){var d=document.createElement('div');d.textContent=s==null?'':s;return d.innerHTML}
 function add(){
@@ -2039,7 +2123,8 @@ function load(){
       if(it.status==='error'){right='<button class="sec" onclick="act(\\'/api/retry/'+it.id+'\\')">Retry</button>'}
       if(it.status!=='running'){right+='<button class="danger" onclick="del(\\''+it.id+'\\')">Remove</button>'}
       right='<div class="acts">'+right+'</div>';
-      h+='<tr><td><span class="tag">'+esc(it.status)+'</span></td><td>'+esc(it.url.slice(0,70))+
+      var fo=(it.status==='done'&&it.folder)?it.folder:'';
+      h+='<tr'+(fo?' data-folder="'+esc(fo)+'"'+(window.selFolder===fo?' class="sel"':''):'')+'><td><span class="tag">'+esc(it.status)+'</span></td><td>'+esc(it.url.slice(0,70))+
          '<div class="mut">'+esc(it.status==='error'?it.error:(it.summary||it.step))+'</div></td><td>'+right+'</td></tr>'});
     document.getElementById('rows').innerHTML=h||'<tr><td class="mut">Nothing yet</td></tr>';
     var s=j.status;
@@ -2047,7 +2132,7 @@ function load(){
     document.getElementById('status').textContent='Free disk: '+s.free_gb+' GB | speech model: '+s.whisper+
       ' | login cookies: '+s.cookies+' | summaries: '+s.summaries+' | projects loaded: '+s.projects+' | Instagram: '+s.instagram})}
 load();setInterval(load,3000);
-</script></main></body></html>""".replace("%CSS%", CSS)
+</script>%SPLIT%</main></body></html>""".replace("%CSS%", CSS).replace("%SPLIT%", SPLIT_JS)
 
 
 @app.get("/")
@@ -2521,5 +2606,5 @@ if __name__ == "__main__":
     rebuild_index()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=night_scheduler, daemon=True).start()
-    log(f"reel2txt v2.9.1 on http://{HOST}:{PORT}  data={DATA}")
+    log(f"reel2txt v3.0 on http://{HOST}:{PORT}  data={DATA}")
     app.run(host=HOST, port=PORT, threaded=True)
