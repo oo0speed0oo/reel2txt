@@ -60,7 +60,7 @@ MIN_FREE_GB = float(env("R2T_MIN_FREE_GB", "5"))
 PAUSE_BETWEEN = float(env("R2T_PAUSE", "6"))
 BLOCK_TRANSCRIPT_CHARS = int(env("R2T_BLOCK_CHARS", "12000"))
 ALLOW_THIRD_PARTY = env("R2T_ALLOW_THIRD_PARTY", "0") == "1"  # fxtwitter.com fallback for X posts
-UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.2"
+UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.3"
 IMPORT_ROOT = Path(env("R2T_IMPORT_ROOT", str(Path.home()))).expanduser().resolve()  # import only from inside this
 DEFAULT_IMPORT = env("R2T_IMPORT_DIR", "~/Downloads")
 SECRETS_FILE = Path(env("R2T_SECRETS", "~/.reel2txt-secrets")).expanduser()  # IG_USER= / IG_PASS= lines, chmod 600
@@ -754,23 +754,78 @@ if(window.top!==window){var n=document.getElementById('nav');if(n)n.style.displa
 
 SPLIT_JS = r"""<script>
 (function(){
-function close(){var pane=document.getElementById('pane');if(!pane)return;pane.classList.remove('open');window.selFolder='';
- document.querySelectorAll('tr.sel').forEach(function(r){r.classList.remove('sel')});
- pane.innerHTML='<div class="empty">Click an item on the left and it opens here.</div>'}
+var cur='',list=[];
+function E(x){var d=document.createElement('div');d.textContent=x==null?'':x;return d.innerHTML}
+function P(){return document.getElementById('pane')}
+function S(){return document.querySelector('.split')}
+function setW(w){var s=S();if(!s)return;
+ if(!w){s.style.removeProperty('--pw');try{localStorage.removeItem('r2tpw')}catch(e){}return}
+ w=Math.max(320,Math.min(w,window.innerWidth-360));s.style.setProperty('--pw',w+'px');try{localStorage.setItem('r2tpw',String(Math.round(w)))}catch(e){}}
+function grip(){var p=P();if(!p||document.getElementById('grip'))return;
+ var g=document.createElement('div');g.id='grip';g.title='Drag to resize. Double-click to reset.';p.parentNode.insertBefore(g,p);
+ var sv=0;try{sv=parseInt(localStorage.getItem('r2tpw')||'0',10)}catch(e){}if(sv)setW(sv);
+ g.addEventListener('pointerdown',function(ev){ev.preventDefault();try{g.setPointerCapture(ev.pointerId)}catch(e){}document.body.classList.add('drag');
+  function mv(e){setW(window.innerWidth-e.clientX-20)}
+  function up(){g.removeEventListener('pointermove',mv);g.removeEventListener('pointerup',up);document.body.classList.remove('drag')}
+  g.addEventListener('pointermove',mv);g.addEventListener('pointerup',up)});
+ g.addEventListener('dblclick',function(){setW(0)})}
+function top_(){return '<div class="ptop"><button class="sec" onclick="closePane()">&#10005; Close</button>'+
+ '<button class="sec" onclick="stepPane(-1)">&lsaquo; Prev</button><button class="sec" onclick="stepPane(1)">Next &rsaquo;</button>'+
+ '<span class="sp"></span><button class="sec wbtn" onclick="widePane()">&harr; Wider</button>'+
+ (cur?'<a href="/library/'+encodeURIComponent(cur)+'/index.html" target="_blank">Full page</a>':'')+'</div>'}
+function close(){var p=P(),s=S();if(!p)return;p.classList.remove('open');if(s)s.classList.remove('hasp');cur='';window.selFolder='';
+ document.querySelectorAll('tr.sel').forEach(function(r){r.classList.remove('sel')});p.innerHTML=''}
 window.closePane=close;
-function pick(folder,tr){var pane=document.getElementById('pane');if(!pane)return false;
- var u='/library/'+encodeURIComponent(folder)+'/index.html';
- pane.innerHTML='<div class="ptop"><button class="sec closeb" onclick="closePane()">&larr; Close</button><a href="'+u+'" target="_blank">Open on its own page</a></div><iframe src="'+u+'"></iframe>';
- pane.classList.add('open');
- window.selFolder=folder;document.querySelectorAll('tr.sel').forEach(function(r){r.classList.remove('sel')});if(tr)tr.classList.add('sel');return true}
+window.widePane=function(){var w=window.innerWidth,p=P();var now=p?p.getBoundingClientRect().width:0;setW(now>w*0.6?0:Math.round(w*0.7))};
+window.stepPane=function(d){var rows=[].slice.call(document.querySelectorAll('tr[data-folder]')).filter(function(r){return r.style.display!=='none'});
+ var i=rows.findIndex(function(r){return r.dataset.folder===cur});var n=rows[i+d];if(n){pick(n.dataset.folder,n);n.scrollIntoView({block:'nearest'})}};
+function sel(id,names,chosen){return '<select id="'+id+'"><option value="">(none)</option>'+names.map(function(n){return '<option value="'+E(n)+'"'+(n===chosen?' selected':'')+'>'+E(n)+'</option>'}).join('')+'</select>'}
+function render(j){var m=j.meta,b=j.base,o=[];
+ o.push('<h2 style="margin-top:0">'+E(m.title||m.folder)+'</h2>');
+ var sub=[m.platform,m.uploader,m.date].filter(Boolean).map(E).join(' &middot; ');
+ if(m.url&&String(m.url).indexOf('http')===0)sub+=' &middot; <a href="'+E(m.url)+'" target="_blank">original link</a>';
+ o.push('<p class="mut">'+sub+'</p>');
+ o.push('<p>'+E(m.summary||'')+'</p>');
+ if(m.note&&m.kind!=='doc')o.push('<div class="note">'+E(m.note)+'</div>');
+ var ps=m.projects||[];
+ o.push(ps.length?'<div class="use"><b>You can use this in:</b><br>'+ps.map(function(x){return '<span class="tag">'+E(x.name)+'</span> <span class="mut">'+E(x.why||'')+'</span>'}).join('<br>')+'</div>':'<div class="use"><b>No project fit yet.</b> <span class="mut">Filed by category.</span></div>');
+ o.push('<p><b>Category:</b> '+E(m.category||'not set')+'</p>');
+ (m.fit||[]).forEach(function(f,i){if(i===0)o.push('<h3>How it could fit (night review)</h3>');
+  o.push('<div class="use"><b>'+E(f.project||'')+'</b> <span class="tag">fit '+(f.score|0)+'/5</span><br>'+E(f.idea||'')+'</div>')});
+ o.push('<p><button id="pcopy">Copy for Claude</button> <button class="sec" id="pstar"></button> <button class="danger" id="pdel">Delete...</button></p>');
+ if(j.video)o.push('<video controls preload="metadata" src="'+E(j.video)+'"></video>');
+ else if(m.kind==='video'&&!m.video_unavailable)o.push('<div class="note">No video file is saved. <button class="sec" id="pgv">Save the video now</button> <span id="pgvm" class="mut"></span></div>');
+ if(j.images.length)o.push('<div class="frames'+(m.kind==='video'?'':' big')+'">'+j.images.map(function(u){return '<a href="'+E(u)+'" target="_blank"><img src="'+E(u)+'" loading="lazy"></a>'}).join('')+'</div>');
+ o.push('<h3>'+(m.kind==='video'?'Transcript':'Text')+'</h3><pre class="scroll">'+E(j.plain||'(nothing)')+'</pre>'+(j.truncated?'<p class="mut">Shortened here. <a href="'+E(b+j.textfile)+'" target="_blank">Open the whole text</a></p>':''));
+ o.push('<h3>Change where it belongs</h3><p>'+sel('pp1',j.projects,ps[0]&&ps[0].name)+' '+sel('pp2',j.projects,ps[1]&&ps[1].name)+' '+sel('pc1',j.categories,m.category)+' <button class="sec" id="psave">Save</button> <span id="pmsg" class="mut"></span></p>');
+ var p=P();p.innerHTML=top_()+'<div class="pbody">'+o.join('')+'</div>';
+ var starred=!!m.star;function paint(){document.getElementById('pstar').textContent=starred?'★ Starred (click to undo)':'☆ Talk about this later'}paint();
+ document.getElementById('pstar').onclick=function(){starred=!starred;paint();fetch('/api/star/'+encodeURIComponent(cur),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({star:starred})})};
+ document.getElementById('pcopy').onclick=function(){var btn=this,old=btn.textContent,ta=document.createElement('textarea');ta.value=j.block;ta.style.cssText='position:fixed;opacity:0';document.body.appendChild(ta);ta.select();
+  var ok=false;try{ok=document.execCommand('copy')}catch(e){}document.body.removeChild(ta);if(!ok&&navigator.clipboard){navigator.clipboard.writeText(j.block);ok=true}
+  btn.textContent=ok?'Copied':'Could not copy';setTimeout(function(){btn.textContent=old},1800)};
+ document.getElementById('pdel').onclick=function(){if(!confirm('Delete this item?\n\nIts files move to the trash on the box and are removed for good after 30 days.'))return;
+  fetch('/api/delete/'+encodeURIComponent(cur),{method:'POST'}).then(function(r){return r.json()}).then(function(r){if(!r.ok){alert(r.error||'Could not delete');return}
+   var tr=document.querySelector('tr.sel');if(tr)tr.remove();close();if(window.load)window.load()})};
+ document.getElementById('psave').onclick=function(){var names=['pp1','pp2'].map(function(i){return document.getElementById(i).value}).filter(Boolean);
+  fetch('/api/projects/'+encodeURIComponent(cur),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names:names,category:document.getElementById('pc1').value})})
+  .then(function(r){return r.json()}).then(function(){document.getElementById('pmsg').textContent='Saved. Reload the list to see it there.'})};
+ var gv=document.getElementById('pgv');if(gv)gv.onclick=function(){document.getElementById('pgvm').textContent='Working... (a minute or two)';
+  fetch('/api/fetch-video/'+encodeURIComponent(cur),{method:'POST'}).then(function(r){return r.json()}).then(function(r){document.getElementById('pgvm').textContent=r.started?'Started. Click the row again in a minute.':(r.error||'Could not start.')})}}
+function pick(folder,tr){var p=P(),s=S();if(!p)return false;grip();cur=folder;window.selFolder=folder;
+ document.querySelectorAll('tr.sel').forEach(function(r){r.classList.remove('sel')});if(tr)tr.classList.add('sel');
+ p.classList.add('open');if(s)s.classList.add('hasp');p.innerHTML=top_()+'<div class="pbody"><p class="mut">Loading...</p></div>';
+ fetch('/api/item/'+encodeURIComponent(folder)).then(function(r){return r.json()}).then(function(j){if(cur!==folder)return;
+  if(j.error){p.innerHTML=top_()+'<div class="pbody"><p>'+E(j.error)+'</p></div>';return}render(j)})
+ .catch(function(e){if(cur===folder)p.innerHTML=top_()+'<div class="pbody"><p>Could not load this item: '+E(String(e))+'</p></div>'});return true}
 window.pickItem=pick;
 document.addEventListener('click',function(ev){var tr=ev.target.closest('tr[data-folder]');if(!tr)return;
- var a=ev.target.closest('a');if(ev.target.closest('button,input,select,textarea'))return;
- if(a&&!(a.getAttribute('href')||'').match(/\/library\/.*index\.html$|^library\/.*index\.html$/))return;
+ if(ev.target.closest('button,input,select,textarea'))return;
+ var a=ev.target.closest('a');if(a&&!(a.getAttribute('href')||'').match(/library\/.*index\.html$/))return;
  if(ev.metaKey||ev.ctrlKey||ev.shiftKey)return;
- ev.preventDefault();pick(tr.dataset.folder,tr)})})();
-window.addEventListener('message',function(ev){if(ev.data!=='r2t-deleted')return;var tr=document.querySelector('tr.sel');if(tr)tr.remove();
- var pane=document.getElementById('pane');if(pane){pane.classList.remove('open');pane.innerHTML='<div class="empty">Deleted. It stays in the trash on the box for 30 days.</div>'};if(window.load)window.load()});
+ ev.preventDefault();pick(tr.dataset.folder,tr)});
+document.addEventListener('keydown',function(ev){if(ev.key==='Escape'&&cur)close()});
+})();
 window.copyFrom=function(url,btn){var old=btn.textContent;fetch(url).then(function(r){return r.text()}).then(function(t){
  var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();
  var ok=false;try{ok=document.execCommand('copy')}catch(e){}document.body.removeChild(ta);
@@ -812,18 +867,22 @@ a.btn{background:var(--acc);color:#fff;border:0}
 button.danger{background:transparent;color:#d33a2f;border:1px solid #d33a2f}
 .pane{display:none;position:fixed;top:0;right:0;bottom:0;left:0;z-index:50;background:var(--bg);flex-direction:column}
 .pane.open{display:flex}
-.pane .ptop{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--card)}
-.pane iframe{flex:1;width:100%;border:0;background:var(--bg)}
-.pane .empty{display:none}
+.ptop{display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--card);flex-wrap:wrap}
+.ptop .sp{flex:1}
+.pbody{flex:1;overflow:auto;padding:14px 16px;background:var(--bg)}
+.pbody h3{font-size:1rem;margin:1.2em 0 .4em}
+pre.scroll{max-height:380px;overflow:auto}
+#grip{display:none}
 tr[data-folder]{cursor:pointer}tr[data-folder]:hover{background:var(--card)}
 tr.sel{background:var(--card);box-shadow:inset 4px 0 0 var(--acc)}
 @media(min-width:900px){
 main.wide{max-width:none;padding-left:20px;padding-right:20px}
-.split{display:grid;grid-template-columns:minmax(340px,1fr) minmax(380px,1.1fr);gap:22px;align-items:start}
-.pane,.pane.open{display:flex;position:sticky;top:10px;left:auto;right:auto;bottom:auto;height:calc(100vh - 24px);border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--card);z-index:1}
-.pane .empty{display:block;padding:28px;color:var(--mut)}
-.pane .closeb{display:none}
-.split .xs{display:none}}
+.split.hasp{display:grid;grid-template-columns:minmax(300px,1fr) 12px var(--pw,min(580px,45vw));align-items:start}
+.split.hasp .pane{display:flex;position:sticky;top:10px;left:auto;right:auto;bottom:auto;height:calc(100vh - 24px);border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--bg);z-index:1}
+.split.hasp #grip{display:block;position:sticky;top:10px;height:calc(100vh - 24px);cursor:col-resize;border-radius:6px}
+#grip:hover,body.drag #grip{background:var(--acc);opacity:.45}
+body.drag{user-select:none;cursor:col-resize}
+.split.hasp .xs{display:none}}
 .note{border-left:4px solid #e0a500;background:var(--card);padding:8px 12px;border-radius:6px;margin:10px 0}
 </style>"""
 
@@ -1008,7 +1067,7 @@ def rebuild_index():
 <button class="sec" onclick="copyFrom('/starred.txt',this)">Copy starred for Claude</button></p>
 <p class="mut">Click any row to read it on the right.</p>
 <table><tr><th>Added</th><th>Folder</th><th class="xs">Source</th><th>What it is</th><th>Use in</th><th class="xs">Category</th><th class="xs">Files</th></tr>{''.join(rows)}</table>
-</div><aside class="pane" id="pane"><div class="empty">Click an item on the left and it opens here.</div></aside></div>
+</div><aside class="pane" id="pane"></aside></div>
 <script>function f(){{var q=document.getElementById('q').value.toLowerCase(),st=document.getElementById('stonly').checked;
 document.querySelectorAll('tr[data-t]').forEach(function(r){{r.style.display=(r.dataset.t.indexOf(q)<0||(st&&r.dataset.star!=='1'))?'none':''}})}}
 if(location.search.indexOf('starred=1')>=0){{document.getElementById('stonly').checked=true;f()}}</script>
@@ -1048,7 +1107,7 @@ if(location.search.indexOf('starred=1')>=0){{document.getElementById('stonly').c
 <title>reel2txt by project</title>{CSS}</head><body><main class="wide"><div class="split"><div class="left">
 <p><a href="/">&larr; Add links</a> &middot; <a href="index.html">Full library</a> &middot; <a href="/edit-projects">Edit projects</a> &middot; <a href="/edit-categories">Edit categories</a> &middot; <a href="/apply">Apply a sorting file</a></p>
 <h1>By project</h1><p class="mut">A link can appear under two projects. Items that help no project are listed further down by category. Open an item to change where it belongs.</p>
-{''.join(body)}</div><aside class="pane" id="pane"><div class="empty">Click an item on the left and it opens here.</div></aside></div>{SPLIT_JS}</main></body></html>"""
+{''.join(body)}</div><aside class="pane" id="pane"></aside></div>{SPLIT_JS}</main></body></html>"""
     (DATA / "projects.html").write_text(page, encoding="utf-8")
     write_for_claude(metas, projs)
 
@@ -1398,7 +1457,7 @@ def html_to_doc(raw, ctype_header=""):
 
 
 def fetch_url(url, maxbytes=DOC_MAX_BYTES):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.2",
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.3",
                                                "Accept": "text/html,application/pdf,*/*;q=0.8",
                                                "Accept-Language": "en,ja;q=0.8"})
     with urllib.request.urlopen(req, timeout=40) as r:
@@ -2277,7 +2336,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name=
 <p class="mut">Click any finished row to read it on the right.</p>
 <table><tbody id="rows"></tbody></table>
 <p class="mut" id="status"></p>
-</div><aside class="pane" id="pane"><div class="empty">Click a finished item on the left and it opens here, with its summary, projects, ideas and the video.</div></aside></div>
+</div><aside class="pane" id="pane"></aside></div>
 <script>
 function esc(s){var d=document.createElement('div');d.textContent=s==null?'':s;return d.innerHTML}
 function add(){
@@ -2306,7 +2365,7 @@ function load(){
     var s=j.status;
     document.getElementById('vids').style.display=s.missing_videos?'block':'none';document.getElementById('vids').innerHTML=s.missing_videos?('<b>'+s.missing_videos+'</b> saved videos have no video file. <button class="sec" onclick="getVideos()">Fetch the missing videos</button> '+(s.fetching?esc(s.fetching):'')):'';
     document.getElementById('status').textContent='Free disk: '+s.free_gb+' GB | speech model: '+s.whisper+
-      ' | login cookies: '+s.cookies+' | summaries: '+s.summaries+' | projects loaded: '+s.projects+' | Instagram: '+s.instagram})}
+      ' | login cookies: '+s.cookies+' | summaries: '+s.summaries+' | projects loaded: '+s.projects+' | Instagram: '+s.instagram+' | page v3.3'})}
 load();setInterval(load,3000);
 </script>%SPLIT%</main></body></html>""".replace("%CSS%", CSS).replace("%SPLIT%", SPLIT_JS)
 
@@ -2349,6 +2408,26 @@ def api_items():
         "keep": KEEP_VIDEO, "missing_videos": missing_video_count(),
         "fetching": (f"fetching {vid_state['done']} of {vid_state['total']} ({vid_state['ok']} ok, {vid_state['fail']} failed)" if vid_state["running"] else ""),
         "projects": len(load_projects()), "instagram": ig_status()})
+
+
+@app.get("/api/item/<folder>")
+def api_item(folder):
+    d = (LIB / folder).resolve()
+    if not d.is_relative_to(LIB.resolve()) or not (d / "meta.json").exists():
+        return jsonify(error="That item is not in the library any more."), 404
+    meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+    plain = read_plain(d) or ""
+    base = "/library/" + quote(folder) + "/"
+    kind = meta.get("kind")
+    sub = "frames" if kind not in ("post", "doc") else "images"
+    key = "frames" if sub == "frames" else "images"
+    images = [base + sub + "/" + quote(f) for f in (meta.get(key) or [])]
+    video = base + quote(meta["video_file"]) if kind not in ("post", "doc") and meta.get("has_video") and meta.get("video_file") else ""
+    return jsonify(meta=meta, base=base, plain=plain[:25000], truncated=len(plain) > 25000,
+                   textfile="text.txt" if kind == "doc" else "transcript.txt", images=images, video=video,
+                   block=build_block(meta, plain), projects=[p["name"] for p in load_projects()],
+                   categories=[c["name"] for c in load_categories()])
+
 
 
 @app.post("/api/retry/<iid>")
@@ -2835,5 +2914,5 @@ if __name__ == "__main__":
     rebuild_index()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=night_scheduler, daemon=True).start()
-    log(f"reel2txt v3.2 on http://{HOST}:{PORT}  data={DATA}")
+    log(f"reel2txt v3.3 on http://{HOST}:{PORT}  data={DATA}")
     app.run(host=HOST, port=PORT, threaded=True)

@@ -221,3 +221,13 @@ normal browser to clear the check, then retry.
 ## v3.2: the side panel works in any window size
 - Wide window (about 900 px and up): two columns, list on the left and the item on the right.
 - Narrower window: the item slides over the page with a **Close** button. A click never leaves the list.
+
+## v3.3 – a real side panel
+
+Click any row (queue, library or by-project) and the item opens in a panel on the right, built from the item's own data: summary, projects, night-review ideas, category, video or images, transcript, and buttons (Copy for Claude, star, delete, change project, save the video).
+
+- **Close:** the Close button, or press Esc. The list goes back to full width.
+- **Resize:** drag the thin bar between the list and the panel (double-click it to reset), or press Wider. The width is remembered.
+- **Prev / Next:** step through the list without closing the panel.
+- On a narrow window the panel covers the page, with the same Close button.
+- The status line at the bottom of the main page ends with `page v3.3`, so you can tell the new page is loaded.
