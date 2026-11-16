@@ -1729,8 +1729,7 @@ def load_settings():
         d = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
     except Exception:
         return
-    if "keep" in d:
-        KEEP_VIDEO = bool(d["keep"])
+    # the video choice is never stored: "Keep the video file" starts ticked every time
     if "fast" in d:
         OLLAMA_MODEL, _omodel = d["fast"], None
     if "night" in d:
@@ -2012,7 +2011,7 @@ PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name=
 <h1>reel2txt</h1>
 <p class="mut">Paste links (TikTok, Instagram, YouTube, X, web pages, PDF links...). Videos, text posts, image posts, articles and PDFs all work. The box reads them, files them in the library and says which of your projects they could help.</p>
 <textarea id="urls" rows="5" placeholder="One or many links, any text around them is fine"></textarea>
-<p><label><input type="checkbox" id="keep" autocomplete="off" checked onchange="setKeep()"> Keep the video file (remembered for every visit)</label></p>
+<p><label><input type="checkbox" id="keep" autocomplete="off" checked> Keep the video file (always on; untick it only for the links you add right now)</label></p>
 <p><button onclick="add()">Add to queue</button> <button class="sec" onclick="fetch('/api/resort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({big:true})}).then(function(r){return r.json()}).then(function(j){location='/night'+(j.error?'?e=1':'')})">Re-sort the files</button> <a href="/night">Which AI</a> &middot; <a href="/index.html">Full library</a> &middot; <a href="/projects.html">By project</a> &middot; <a href="/edit-projects">Edit projects</a> &middot; <a href="/import">Import files</a> &middot; <a href="/apply">Apply sorting</a> &middot; <a href="/index.txt">index.txt</a></p>
 <p id="msg" class="mut"></p>
 <p id="vids" class="note" style="display:none"></p>
@@ -2026,7 +2025,7 @@ function add(){
     body:JSON.stringify({text:document.getElementById('urls').value,keep_video:document.getElementById('keep').checked})})
   .then(function(r){return r.json()}).then(function(j){
     document.getElementById('msg').textContent=j.added+' added'+(j.skipped?(', '+j.skipped+' already in the list'):'');
-    document.getElementById('urls').value='';load()})}
+    document.getElementById('urls').value='';document.getElementById('keep').checked=true;load()})}
 function act(p){fetch(p,{method:'POST'}).then(load)}
 function del(id){if(confirm('Remove this from the list?\\n\\nThe saved item stays in your library. Only this row is removed.')){act('/api/remove/'+id)}}
 var keepInit=false;
@@ -2044,7 +2043,6 @@ function load(){
          '<div class="mut">'+esc(it.status==='error'?it.error:(it.summary||it.step))+'</div></td><td>'+right+'</td></tr>'});
     document.getElementById('rows').innerHTML=h||'<tr><td class="mut">Nothing yet</td></tr>';
     var s=j.status;
-    if(!keepInit){document.getElementById('keep').checked=!!s.keep;keepInit=true}
     document.getElementById('vids').style.display=s.missing_videos?'block':'none';document.getElementById('vids').innerHTML=s.missing_videos?('<b>'+s.missing_videos+'</b> saved videos have no video file. <button class="sec" onclick="getVideos()">Fetch the missing videos</button> '+(s.fetching?esc(s.fetching):'')):'';
     document.getElementById('status').textContent='Free disk: '+s.free_gb+' GB | speech model: '+s.whisper+
       ' | login cookies: '+s.cookies+' | summaries: '+s.summaries+' | projects loaded: '+s.projects+' | Instagram: '+s.instagram})}
@@ -2180,13 +2178,13 @@ def fetch_videos(folders=None):
 def api_keep():
     global KEEP_VIDEO
     d = request.get_json(force=True, silent=True) or {}
-    KEEP_VIDEO = bool(d.get("keep", True))
+    KEEP_VIDEO = True  # the tick is per add; kept for older pages
     cur = {}
     try:
         cur = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
     except Exception:
         pass
-    cur["keep"] = KEEP_VIDEO
+    cur.pop("keep", None)
     SETTINGS_FILE.write_text(json.dumps(cur, indent=1), encoding="utf-8")
     return jsonify(ok=True, keep=KEEP_VIDEO)
 
@@ -2523,5 +2521,5 @@ if __name__ == "__main__":
     rebuild_index()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=night_scheduler, daemon=True).start()
-    log(f"reel2txt v2.9 on http://{HOST}:{PORT}  data={DATA}")
+    log(f"reel2txt v2.9.1 on http://{HOST}:{PORT}  data={DATA}")
     app.run(host=HOST, port=PORT, threaded=True)
