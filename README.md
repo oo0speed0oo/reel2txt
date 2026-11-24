@@ -231,3 +231,7 @@ Click any row (queue, library or by-project) and the item opens in a panel on th
 - **Prev / Next:** step through the list without closing the panel.
 - On a narrow window the panel covers the page, with the same Close button.
 - The status line at the bottom of the main page ends with `page v3.3`, so you can tell the new page is loaded.
+
+## v3.4 – YouTube videos that block embedding
+
+Some YouTube videos fail with "Video unavailable. Playback on other websites has been disabled by the video owner". The captions fallback now also runs for that error, and it tries several YouTube player clients (with and without cookies) before giving up. Private, removed and members-only videos still fail on purpose.

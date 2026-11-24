@@ -60,7 +60,7 @@ MIN_FREE_GB = float(env("R2T_MIN_FREE_GB", "5"))
 PAUSE_BETWEEN = float(env("R2T_PAUSE", "6"))
 BLOCK_TRANSCRIPT_CHARS = int(env("R2T_BLOCK_CHARS", "12000"))
 ALLOW_THIRD_PARTY = env("R2T_ALLOW_THIRD_PARTY", "0") == "1"  # fxtwitter.com fallback for X posts
-UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.3"
+UA = "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.4"
 IMPORT_ROOT = Path(env("R2T_IMPORT_ROOT", str(Path.home()))).expanduser().resolve()  # import only from inside this
 DEFAULT_IMPORT = env("R2T_IMPORT_DIR", "~/Downloads")
 SECRETS_FILE = Path(env("R2T_SECRETS", "~/.reel2txt-secrets")).expanduser()  # IG_USER= / IG_PASS= lines, chmod 600
@@ -1320,15 +1320,21 @@ def process_youtube_fallback(item, url, workdir, why):
     import yt_dlp
 
     update(item, step="no video file from YouTube, trying the captions")
-    info, last = None, None
-    for cookies in (True, False):
-        try:
-            with yt_dlp.YoutubeDL(_yt_opts(workdir, cookies, skip_download=True, writesubtitles=True, writeautomaticsub=True,
-                                           subtitleslangs=["en.*", "ja.*", "zh.*"], subtitlesformat="vtt")) as ydl:
-                info = ydl.extract_info(url, download=True)
+    info, last, ex = None, None, {}
+    # Videos with embedding switched off fail with some of YouTube's player clients, so try several, with and without cookies.
+    for clients in (None, ["mweb", "web_safari", "tv"], ["ios", "android_vr", "web"]):
+        for cookies in (True, False):
+            args = {"extractor_args": {"youtube": {"player_client": clients}}} if clients else {}
+            try:
+                with yt_dlp.YoutubeDL(_yt_opts(workdir, cookies, skip_download=True, writesubtitles=True, writeautomaticsub=True,
+                                               subtitleslangs=["en.*", "ja.*", "zh.*"], subtitlesformat="vtt", **args)) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                ex = args
+                break
+            except Exception as e:
+                last = e
+        if info is not None:
             break
-        except Exception as e:
-            last = e
     if info is None:
         raise RuntimeError(f"YouTube would not even give the page information ({str(last)[:150]}).")
     vid = safe(str(info.get("id", "x")), 24)
@@ -1347,7 +1353,7 @@ def process_youtube_fallback(item, url, workdir, why):
     if not segs:
         update(item, step="no captions, listening to the audio instead")
         try:
-            with yt_dlp.YoutubeDL(_yt_opts(workdir, True, format="ba/b")) as ydl:
+            with yt_dlp.YoutubeDL(_yt_opts(workdir, True, format="ba/b", **ex)) as ydl:
                 ydl.extract_info(url, download=True)
             audio = [f for f in workdir.glob("video.*") if f.suffix.lower() in (".m4a", ".webm", ".mp4", ".opus", ".mp3", ".ogg", ".mka")]
             if not audio:
@@ -1457,7 +1463,7 @@ def html_to_doc(raw, ctype_header=""):
 
 
 def fetch_url(url, maxbytes=DOC_MAX_BYTES):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.3",
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) reel2txt/3.4",
                                                "Accept": "text/html,application/pdf,*/*;q=0.8",
                                                "Accept-Language": "en,ja;q=0.8"})
     with urllib.request.urlopen(req, timeout=40) as r:
@@ -1891,7 +1897,9 @@ def process(item):
                         process_post(item, url, workdir, str(e))
                         return
                     if platform_of(url) == "YouTube" and re.search(r"format is not available|no video formats|requested format|"
-                                                                   r"sign in to confirm|not a bot|nsig|signature", str(e), re.I):
+                                                                   r"sign in to confirm|not a bot|nsig|signature|video unavailable|playback on other websites|"
+                                                                   r"embed|unable to extract|player response", str(e), re.I) \
+                            and not re.search(r"private video|has been removed|account.*terminated|copyright|live event|members-only", str(e), re.I):
                         log("YouTube gave no video file, using captions or audio:", str(e)[:120])
                         process_youtube_fallback(item, url, workdir, str(e))
                         return
@@ -2365,7 +2373,7 @@ function load(){
     var s=j.status;
     document.getElementById('vids').style.display=s.missing_videos?'block':'none';document.getElementById('vids').innerHTML=s.missing_videos?('<b>'+s.missing_videos+'</b> saved videos have no video file. <button class="sec" onclick="getVideos()">Fetch the missing videos</button> '+(s.fetching?esc(s.fetching):'')):'';
     document.getElementById('status').textContent='Free disk: '+s.free_gb+' GB | speech model: '+s.whisper+
-      ' | login cookies: '+s.cookies+' | summaries: '+s.summaries+' | projects loaded: '+s.projects+' | Instagram: '+s.instagram+' | page v3.3'})}
+      ' | login cookies: '+s.cookies+' | summaries: '+s.summaries+' | projects loaded: '+s.projects+' | Instagram: '+s.instagram+' | page v3.4'})}
 load();setInterval(load,3000);
 </script>%SPLIT%</main></body></html>""".replace("%CSS%", CSS).replace("%SPLIT%", SPLIT_JS)
 
@@ -2914,5 +2922,5 @@ if __name__ == "__main__":
     rebuild_index()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=night_scheduler, daemon=True).start()
-    log(f"reel2txt v3.3 on http://{HOST}:{PORT}  data={DATA}")
+    log(f"reel2txt v3.4 on http://{HOST}:{PORT}  data={DATA}")
     app.run(host=HOST, port=PORT, threaded=True)
